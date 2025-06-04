@@ -2,16 +2,25 @@
  * Custom hook for LNbits API interactions
  * Handles wallet operations for the custodial Lightning wallet option
  * All amounts are handled in satoshis internally
+ * 
+ * Now supports user wallet creation via usermanager API
  */
 
 import { satsToMillisats, millisatsToSats } from '../utils/bitcoinUnits';
 
-// LNbits API configuration
-const LNBITS_CONFIG = {
-  baseUrl: 'https://demo.lnbits.com',
-  walletId: '7b62a3019da5499ab307ff2bd350680d',
-  adminKey: '711b71152ad14d67bcbfe3866d45d33f',
-  invoiceKey: '921cbb1e491f4825b1e34f1e75cbc89d'
+// LNbits Admin configuration (for managing user wallets)
+const LNBITS_ADMIN_CONFIG = {
+  baseUrl: import.meta.env.VITE_LNBITS_URL,
+  adminWalletId: import.meta.env.VITE_LNBITS_ADMIN_WALLET_ID,
+  adminKey: import.meta.env.VITE_LNBITS_ADMIN_KEY,
+  adminInvoiceKey: import.meta.env.VITE_LNBITS_ADMIN_INVOICE_KEY,
+  userManagerAdminKey: import.meta.env.VITE_LNBITS_USER_MANAGER_ADMIN_KEY
+};
+
+// Local storage keys
+const STORAGE_KEYS = {
+  USER_WALLET: 'lnbits_user_wallet',
+  USER_ID: 'lnbits_user_id'
 };
 
 export const useLNbitsAPI = (logger = null) => {
@@ -24,16 +33,154 @@ export const useLNbitsAPI = (logger = null) => {
   };
 
   /**
-   * Fetches wallet details from LNbits API
-   * @returns {Promise<Object>} Wallet details including balance in millisats
+   * Get user wallet from localStorage
    */
-  const getWalletDetails = async () => {
+  const getUserWallet = () => {
     try {
-      log('wallet', '🔍 Fetching LNbits wallet details...');
+      const wallet = localStorage.getItem(STORAGE_KEYS.USER_WALLET);
+      return wallet ? JSON.parse(wallet) : null;
+    } catch (error) {
+      log('error', 'Failed to get user wallet from localStorage', error.message);
+      return null;
+    }
+  };
+
+  /**
+   * Save user wallet to localStorage
+   */
+  const saveUserWallet = (wallet) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.USER_WALLET, JSON.stringify(wallet));
+      log('debug', 'User wallet saved to localStorage');
+    } catch (error) {
+      log('error', 'Failed to save user wallet to localStorage', error.message);
+    }
+  };
+
+  /**
+   * Save user ID to localStorage
+   */
+  const saveUserId = (userId) => {
+    localStorage.setItem(STORAGE_KEYS.USER_ID, userId);
+  };
+
+  /**
+   * Clear user data from localStorage
+   */
+  const clearUserData = () => {
+    localStorage.removeItem(STORAGE_KEYS.USER_WALLET);
+    localStorage.removeItem(STORAGE_KEYS.USER_ID);
+    log('info', 'User data cleared from localStorage');
+  };
+
+  /**
+   * Creates a new user in LNbits usermanager
+   */
+  const createUser = async (userName = null) => {
+    try {
+      const randomId = Math.random().toString(36).substring(2, 8);
+      const defaultUserName = userName || `loan_user_${randomId}`;
+      const walletName = `LTV Loan Wallet`;
       
-      const response = await fetch(`${LNBITS_CONFIG.baseUrl}/api/v1/wallet`, {
+      log('wallet', `🔧 Creating new LNbits user: ${defaultUserName}`);
+      
+      const response = await fetch(`${LNBITS_ADMIN_CONFIG.baseUrl}/usermanager/api/v1/users`, {
+        method: 'POST',
         headers: {
-          'X-Api-Key': LNBITS_CONFIG.invoiceKey
+          'X-Api-Key': LNBITS_ADMIN_CONFIG.adminKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          user_name: defaultUserName,
+          wallet_name: walletName,
+          admin_id: LNBITS_ADMIN_CONFIG.userManagerAdminKey,
+          email: "",
+          password: "",
+          extra: {
+            created_by: "loan_ltv_demo",
+            created_at: new Date().toISOString()
+          }
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to create user: ${response.status} - ${errorText}`);
+      }
+      
+      const userData = await response.json();
+      log('success', `✅ User created successfully: ${userData.name}`);
+      
+      // Save user ID
+      saveUserId(userData.id);
+      
+      // Extract wallet data from the response
+      if (userData.wallets && userData.wallets.length > 0) {
+        const userWallet = userData.wallets[0];
+        const walletData = {
+          id: userWallet.id,
+          name: userWallet.name,
+          user: userWallet.user,
+          adminkey: userWallet.adminkey,
+          inkey: userWallet.inkey,
+          created_at: new Date().toISOString()
+        };
+        
+        saveUserWallet(walletData);
+        log('success', `💰 User wallet created: ${userWallet.name} (${userWallet.id})`);
+        
+        return {
+          user: userData,
+          wallet: walletData
+        };
+      } else {
+        throw new Error('No wallet found in user creation response');
+      }
+    } catch (error) {
+      log('error', 'Failed to create user', error.message);
+      throw error;
+    }
+  };
+
+  /**
+   * Gets or creates a user wallet
+   */
+  const getOrCreateUserWallet = async () => {
+    // Check if we already have a user wallet
+    let userWallet = getUserWallet();
+    
+    if (userWallet) {
+      log('info', `📖 Using existing user wallet: ${userWallet.name} (${userWallet.id})`);
+      
+      // Verify the wallet still exists and get current balance
+      try {
+        const walletDetails = await getWalletDetailsForUser(userWallet);
+        return walletDetails;
+      } catch (error) {
+        log('warning', 'Existing wallet not accessible, creating new one', error.message);
+        clearUserData();
+        userWallet = null;
+      }
+    }
+    
+    if (!userWallet) {
+      log('info', '🆕 No existing wallet found, creating new user wallet...');
+      const { wallet } = await createUser();
+      const walletDetails = await getWalletDetailsForUser(wallet);
+      return walletDetails;
+    }
+  };
+
+  /**
+   * Fetches wallet details for a specific user wallet
+   */
+  const getWalletDetailsForUser = async (userWallet) => {
+    try {
+      log('wallet', `🔍 Fetching wallet details for: ${userWallet.name}`);
+      
+      const response = await fetch(`${LNBITS_ADMIN_CONFIG.baseUrl}/api/v1/wallet`, {
+        headers: {
+          'X-Api-Key': userWallet.inkey // Use user's invoice key
         }
       });
       
@@ -46,6 +193,7 @@ export const useLNbitsAPI = (logger = null) => {
       // Convert balance from millisats to sats for our app
       const result = {
         ...wallet,
+        ...userWallet, // Include user wallet metadata
         balanceSats: millisatsToSats(wallet.balance),
         balanceMillisats: wallet.balance
       };
@@ -59,13 +207,32 @@ export const useLNbitsAPI = (logger = null) => {
   };
 
   /**
-   * Creates a Lightning invoice using LNbits API
+   * Fetches wallet details (legacy method for compatibility)
+   */
+  const getWalletDetails = async () => {
+    const userWallet = getUserWallet();
+    if (userWallet) {
+      return await getWalletDetailsForUser(userWallet);
+    } else {
+      // Create new wallet if none exists
+      return await getOrCreateUserWallet();
+    }
+  };
+
+  /**
+   * Creates a Lightning invoice using LNbits API for the user's wallet
    * @param {number} amountSats - Amount in satoshis
    * @param {string} memo - Invoice description
    * @returns {Promise<Object>} Invoice details including payment_request and payment_hash
    */
   const createInvoice = async (amountSats, memo = 'Lightning topup') => {
     try {
+      // Get user wallet
+      const userWallet = getUserWallet();
+      if (!userWallet) {
+        throw new Error('No user wallet found. Please setup custodial wallet first.');
+      }
+
       log('payment', `⚡ Creating invoice for ${amountSats} sats: "${memo}"`);
       
       // LNbits API expects SATS for invoice creation, not millisats!
@@ -76,10 +243,10 @@ export const useLNbitsAPI = (logger = null) => {
         expiry: 3600 // 1 hour expiry
       };
       
-      const response = await fetch(`${LNBITS_CONFIG.baseUrl}/api/v1/payments`, {
+      const response = await fetch(`${LNBITS_ADMIN_CONFIG.baseUrl}/api/v1/payments`, {
         method: 'POST',
         headers: {
-          'X-Api-Key': LNBITS_CONFIG.invoiceKey,
+          'X-Api-Key': userWallet.inkey, // Use user's invoice key
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(requestBody)
@@ -107,15 +274,21 @@ export const useLNbitsAPI = (logger = null) => {
   };
 
   /**
-   * Checks payment status for a given payment hash
+   * Checks payment status for a given payment hash using user's wallet
    * @param {string} paymentHash - Payment hash to check
    * @returns {Promise<Object>} Payment status including paid boolean and amount info
    */
   const checkPayment = async (paymentHash) => {
     try {
-      const response = await fetch(`${LNBITS_CONFIG.baseUrl}/api/v1/payments/${paymentHash}`, {
+      // Get user wallet
+      const userWallet = getUserWallet();
+      if (!userWallet) {
+        throw new Error('No user wallet found. Please setup custodial wallet first.');
+      }
+
+      const response = await fetch(`${LNBITS_ADMIN_CONFIG.baseUrl}/api/v1/payments/${paymentHash}`, {
         headers: {
-          'X-Api-Key': LNBITS_CONFIG.invoiceKey
+          'X-Api-Key': userWallet.inkey // Use user's invoice key
         }
       });
       
@@ -133,7 +306,7 @@ export const useLNbitsAPI = (logger = null) => {
       
       return payment;
     } catch (error) {
-      console.error('Failed to check payment:', error);
+      log('error', 'Failed to check payment', error.message);
       throw error;
     }
   };
@@ -159,8 +332,7 @@ export const useLNbitsAPI = (logger = null) => {
   };
 
   /**
-   * Sends a payment from the configured LNbits wallet to a Lightning Address.
-   * This function uses the adminKey to authorize the outgoing payment.
+   * Sends a payment from the user's LNbits wallet to a Lightning Address.
    * @param {string} lightningAddress - The recipient's Lightning Address (e.g., austin@bitcoinpleb.dev)
    * @param {number} amountSats - Amount to send in satoshis
    * @param {string} comment - Optional comment for the payment
@@ -170,6 +342,12 @@ export const useLNbitsAPI = (logger = null) => {
   const sendPaymentToLightningAddress = async (lightningAddress, amountSats, comment = 'Loan LTV Top-up') => {
     if (amountSats <= 0) {
       throw new Error('Payment amount must be greater than 0 satoshis.');
+    }
+
+    // Get user wallet
+    const userWallet = getUserWallet();
+    if (!userWallet) {
+      throw new Error('No user wallet found. Please setup custodial wallet first.');
     }
 
     try {
@@ -195,9 +373,6 @@ export const useLNbitsAPI = (logger = null) => {
       const callbackUrl = new URL(lnurlPayParams.callback);
       callbackUrl.searchParams.append('amount', amountMillisats.toString());
       if (comment) {
-        // Note: Not all LNURL-pay services support comments this way.
-        // Some might require it in the lnurlPayParams.commentAllowed field.
-        // For simplicity, we'll try adding it here.
         callbackUrl.searchParams.append('comment', comment);
       }
       
@@ -212,11 +387,11 @@ export const useLNbitsAPI = (logger = null) => {
       }
       const bolt11Invoice = invoiceData.pr;
 
-      // 4. Pay the BOLT11 invoice using LNbits API (requires adminKey)
-      const paymentResponse = await fetch(`${LNBITS_CONFIG.baseUrl}/api/v1/payments`, {
+      // 4. Pay the BOLT11 invoice using user's LNbits wallet
+      const paymentResponse = await fetch(`${LNBITS_ADMIN_CONFIG.baseUrl}/api/v1/payments`, {
         method: 'POST',
         headers: {
-          'X-Api-Key': LNBITS_CONFIG.adminKey, // Use ADMIN key for sending payments
+          'X-Api-Key': userWallet.adminkey, // Use user's admin key for sending payments
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -231,8 +406,6 @@ export const useLNbitsAPI = (logger = null) => {
       }
       
       const paymentResult = await paymentResponse.json();
-      // paymentResult should contain { payment_hash: "..." }
-      // We can also add the amountSats for consistency if needed.
       return {
         ...paymentResult,
         amountSats, // The amount we intended to send
@@ -242,16 +415,24 @@ export const useLNbitsAPI = (logger = null) => {
       };
 
     } catch (error) {
-      console.error(`Failed to send payment to ${lightningAddress}:`, error);
-      throw error; // Re-throw to be caught by the caller
+      log('error', `Failed to send payment to ${lightningAddress}`, error.message);
+      throw error;
     }
   };
 
   return {
+    // Wallet management
+    getOrCreateUserWallet,
+    clearUserData,
+    getUserWallet,
+    
+    // Standard wallet operations
     getWalletDetails,
     createInvoice,
     checkPayment,
     sendPaymentToLightningAddress,
-    config: LNBITS_CONFIG
+    
+    // Config
+    config: LNBITS_ADMIN_CONFIG
   };
 }; 

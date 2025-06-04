@@ -174,9 +174,33 @@ const LNBITS_CONFIG = {
 
 1. **Start Fresh**: Application loads with only initial deposit transaction
 2. **Setup Wallet**: Configure Lightning wallet (custodial or self-custodial)
+   - **Automatic Persistence**: Wallet configurations are saved to localStorage
+   - **Restoration on Reload**: Previously configured wallets are automatically restored
 3. **Market Crash**: Use demo controls to crash BTC price by 20%
 4. **Margin Call**: LTV will increase, triggering warnings and showing required top-up
 5. **Lightning Top-up**: Add sats via Lightning to restore healthy LTV ratio
+
+### Wallet Management Features
+
+- **Automatic Restoration**: Wallet connections are automatically restored when you reload the page
+- **Loading States**: Clean loading indicators while checking for existing wallet connections
+- **Open Wallet**: For custodial wallets, click "Open Wallet" to view your LNbits wallet in a new tab
+- **Wallet Deletion**: Use "Delete Wallet" to clear all wallet data and start fresh
+- **Development Testing**: Use browser console commands for testing wallet persistence:
+  ```javascript
+  // View stored wallet data
+  walletStorageTest.showStoredWallets()
+  
+  // Clear all wallet data
+  walletStorageTest.clearAllWalletData()
+  
+  // Simulate saved wallet configurations
+  walletStorageTest.simulateNWCWallet()
+  walletStorageTest.simulateLNURLWWallet()
+  
+  // Show all available commands
+  walletStorageTest.help()
+  ```
 
 ## Development Notes
 

@@ -112,6 +112,7 @@ const LightningInvoiceModal = ({
                 amountSats={invoice.amountSats}
                 btcPrice={btcPrice}
                 isSuccess={isSuccessState}
+                walletName={invoice.walletName}
               />
             )}
             <InvoiceDisplay 
@@ -160,7 +161,7 @@ const LightningInvoiceModal = ({
  * CustodialFundingDisplay Component
  * Shows info about funding the custodial wallet
  */
-const CustodialFundingDisplay = ({ amountSats, btcPrice, isSuccess }) => (
+const CustodialFundingDisplay = ({ amountSats, btcPrice, isSuccess, walletName }) => (
   <div className={`p-4 rounded-lg mb-4 text-center ${isSuccess ? 'bg-green-900/30' : 'bg-blue-900/30'}`}>
     <div className={`w-12 h-12 ${isSuccess ? 'text-green-500' : 'text-blue-400'} mx-auto mb-3 flex items-center justify-center`}>
       {isSuccess ? <CheckCircle className="w-12 h-12" /> : '💰'}
@@ -168,13 +169,18 @@ const CustodialFundingDisplay = ({ amountSats, btcPrice, isSuccess }) => (
     <p className="text-lg font-semibold mb-2">
       {isSuccess ? 'Added' : 'Add'} {formatSats(amountSats)} to Your Wallet
     </p>
+    {walletName && (
+      <p className="text-xs text-gray-400 mb-2">
+        Wallet: {walletName}
+      </p>
+    )}
     <p className="text-gray-400 mb-2">
       (≈ ${satsToUSD(amountSats, btcPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
     </p>
     <p className="text-sm text-gray-300">
       {isSuccess ? 
-        'Funds have been added to your LNbits wallet and loan collateral.' : 
-        'Pay the invoice below to fund your LNbits wallet and increase your loan collateral.'
+        'Funds have been added to your custodial wallet and loan collateral.' : 
+        'Pay the invoice below to fund your custodial wallet and increase your loan collateral.'
       }
     </p>
   </div>

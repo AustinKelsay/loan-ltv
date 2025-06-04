@@ -1,5 +1,5 @@
 import React from 'react';
-import { Wallet, Settings, ExternalLink } from 'lucide-react';
+import { Wallet, Settings, ExternalLink, CheckCircle } from 'lucide-react';
 import { formatSats } from '../utils/bitcoinUnits';
 
 /**
@@ -300,24 +300,52 @@ const CustodialSetup = ({
       </div>
     )}
     
-    {/* Setup button */}
-    <button
-      onClick={onSetup}
-      disabled={loadingWallet}
-      className="w-full py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-semibold rounded-lg hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 cursor-pointer"
-    >
-      {loadingWallet ? (
-        <>
-          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-          Connecting...
-        </>
-      ) : (
-        <>
-          <ExternalLink className="w-4 h-4" />
-          {custodialWallet ? 'Use This Wallet' : 'Connect to LNbits Demo'}
-        </>
-      )}
-    </button>
+    {/* Custodial Wallet Option */}
+    <div className="space-y-4">
+      <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center">
+            <Wallet className="w-5 h-5 text-blue-400" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-blue-400">LNbits Custodial Wallet</h3>
+            <p className="text-xs text-gray-400">Managed Lightning wallet</p>
+          </div>
+        </div>
+        <p className="text-sm text-gray-300 mb-3">
+          We'll create a dedicated custodial wallet for you on our LNbits demo instance. 
+          This wallet will be used for loan collateral management and automatic liquidations.
+        </p>
+        <div className="bg-gray-900/50 rounded p-3 text-xs text-gray-400">
+          <p><strong>Features:</strong></p>
+          <ul className="list-disc list-inside mt-1 space-y-1">
+            <li>Individual user wallet creation</li>
+            <li>Automatic invoice generation</li>
+            <li>Real-time payment detection</li>
+            <li>Lightning address payments</li>
+            <li>Wallet data saved locally</li>
+          </ul>
+        </div>
+      </div>
+      
+      <button
+        onClick={onSetup}
+        disabled={loadingWallet}
+        className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2"
+      >
+        {loadingWallet ? (
+          <>
+            <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+            Creating Your Wallet...
+          </>
+        ) : (
+          <>
+            <Wallet className="w-4 h-4" />
+            Create Custodial Wallet
+          </>
+        )}
+      </button>
+    </div>
   </div>
 );
 

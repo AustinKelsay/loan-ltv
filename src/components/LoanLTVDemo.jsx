@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Zap, AlertTriangle, TrendingDown, CheckCircle, Wallet, Settings, XCircle } from 'lucide-react';
+import { Zap, AlertTriangle, TrendingDown, CheckCircle, Wallet, Settings, XCircle, ExternalLink, Trash2 } from 'lucide-react';
 import { useWalletSetup } from '../hooks/useWalletSetup';
 import { useSystemLogs } from '../hooks/useSystemLogs';
 import WalletSetupModal from './WalletSetupModal';
@@ -12,6 +12,9 @@ import {
   parseToSats,
   isValidSatsAmount 
 } from '../utils/bitcoinUnits';
+
+// Import test utility for wallet storage testing (development only)
+import '../utils/testWalletStorage';
 
 /**
  * Mock API for loan operations
@@ -146,13 +149,16 @@ export default function LoanLTVDemo() {
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [paymentError, setPaymentError] = useState(null); // New state for payment errors
   
+  // Wallet deletion confirmation modal state
+  const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  
   // Custom hooks
   const { price: btcPrice, priceChange, setPrice: setBtcPrice } = usePriceFeed();
   const systemLogs = useSystemLogs();
   const walletState = useWalletSetup(systemLogs);
   
   // LNbits reserve constant (minimum sats to keep in wallet)
-  const LNBITS_RESERVE_SATS = 10;
+  const LNBITS_RESERVE_SATS = 7;
 
   /**
    * Calculates loan metrics based on current BTC price and loan data
@@ -349,13 +355,14 @@ export default function LoanLTVDemo() {
         
         paymentDetails = {
           paymentType: 'custodial_funding', // New type to distinguish from self-custodial
-          invoice: lnbitsInvoice.bolt11,
+          invoice: lnbitsInvoice.payment_request,
           amountSats: topupAmount,
           paymentHash: lnbitsInvoice.payment_hash,
           checking_id: lnbitsInvoice.checking_id,
           expiry: 3600,
           createdAt: new Date().toISOString(),
-          walletUrl: `${walletState.lnbitsAPI.config.baseUrl}/wallet?usr=${walletState.lnbitsAPI.config.walletId}`
+          walletUrl: `${walletState.lnbitsAPI.config.baseUrl}/wallet?usr=${walletState.custodialWallet?.id || 'unknown'}`,
+          walletName: walletState.custodialWallet?.name || 'User Wallet'
         };
         systemLogs.logSuccess('✅ LNbits funding invoice generated successfully');
       } else {
@@ -536,12 +543,63 @@ export default function LoanLTVDemo() {
     systemLogs.logWarning(`📉 Market crash simulated: BTC price dropped from $${btcPrice.toLocaleString()} to $${Math.round(newPrice).toLocaleString()} (-20%)`);
     setBtcPrice(newPrice);
   };
+
+  /**
+   * Handles wallet deletion confirmation
+   */
+  const handleDeleteWallet = () => {
+    setShowDeleteConfirmation(true);
+  };
+
+  /**
+   * Confirms wallet deletion and clears all wallet data
+   */
+  const confirmDeleteWallet = () => {
+    systemLogs.logWarning('🗑️ Deleting wallet and clearing all data...');
+    walletState.resetWalletSetup();
+    setShowDeleteConfirmation(false);
+    systemLogs.logSuccess('✅ Wallet deleted successfully');
+  };
+
+  /**
+   * Cancels wallet deletion
+   */
+  const cancelDeleteWallet = () => {
+    setShowDeleteConfirmation(false);
+  };
+
+  /**
+   * Opens the LNbits wallet in a new tab (for custodial wallets)
+   */
+  const openLNbitsWallet = () => {
+    if (walletState.walletConfig?.type === 'custodial' && walletState.custodialWallet) {
+      const lnbitsUrl = walletState.lnbitsAPI.config.baseUrl;
+      const walletId = walletState.custodialWallet.id;
+      const walletUrl = `${lnbitsUrl}/wallet?wal=${walletId}`;
+      
+      systemLogs.logInfo(`🔗 Opening LNbits wallet in new tab: ${walletUrl}`);
+      window.open(walletUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
   
   // Show loading state while data is being fetched
   if (loading) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
         <div className="text-xl">Loading loan details...</div>
+      </div>
+    );
+  }
+
+  // Show loading state while checking for existing wallet connections
+  if (!walletState.initialLoadComplete) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-2 border-orange-500 border-t-transparent mx-auto mb-4"></div>
+          <div className="text-xl">Checking for existing wallet connections...</div>
+          <div className="text-gray-400 text-sm mt-2">Please wait while we restore your wallet state</div>
+        </div>
       </div>
     );
   }
@@ -638,7 +696,7 @@ export default function LoanLTVDemo() {
                   <CheckCircle className="w-4 h-4" />
                   <span>
                     {walletState.walletConfig.type === 'custodial' 
-                      ? 'Custodial Wallet' 
+                      ? `Custodial Wallet (${formatSats(walletState.custodialWallet?.balanceSats || 0)} balance)` 
                       : `Self-Custodial (${walletState.walletConfig.method.toUpperCase()})`
                     }
                   </span>
@@ -731,15 +789,29 @@ export default function LoanLTVDemo() {
               {walletState.walletSetup ? 'Top-up via Lightning' : 'Setup Wallet & Top-up'}
             </button>
             
-            {/* Change wallet button (only shown when wallet is set up) */}
+            {/* Wallet management buttons (only shown when wallet is set up) */}
             {walletState.walletSetup && (
-              <button
-                onClick={walletState.resetWalletSetup}
-                className="px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2 cursor-pointer"
-              >
-                <Settings className="w-4 h-4" />
-                Change Wallet
-              </button>
+              <>
+                {/* Open Wallet button (for custodial wallets only) */}
+                {walletState.walletConfig?.type === 'custodial' && (
+                  <button
+                    onClick={openLNbitsWallet}
+                    className="px-4 py-3 bg-blue-600 border border-blue-500 rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 cursor-pointer"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Open Wallet
+                  </button>
+                )}
+                
+                {/* Delete Wallet button */}
+                <button
+                  onClick={handleDeleteWallet}
+                  className="px-4 py-3 bg-red-600 border border-red-500 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {walletState.walletConfig?.type === 'custodial' ? 'Delete Wallet' : 'Change Wallet'}
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -806,6 +878,54 @@ export default function LoanLTVDemo() {
         paymentError={paymentError}
         onClose={closeInvoiceModal}
       />
+
+      {/* Delete Wallet Confirmation Modal */}
+      {showDeleteConfirmation && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md w-full">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-full bg-red-600/20 flex items-center justify-center">
+                <Trash2 className="w-6 h-6 text-red-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-white">Delete Wallet</h3>
+                <p className="text-sm text-gray-400">
+                  {walletState.walletConfig?.type === 'custodial' ? 'LNbits Custodial Wallet' : 'Self-Custodial Wallet'}
+                </p>
+              </div>
+            </div>
+            
+            <div className="mb-6">
+              <p className="text-gray-300 mb-3">
+                Are you sure you want to delete this wallet? This action cannot be undone.
+              </p>
+              {walletState.walletConfig?.type === 'custodial' && (
+                <div className="bg-yellow-900/20 border border-yellow-600 rounded-lg p-3">
+                  <p className="text-yellow-400 text-sm">
+                    <strong>Warning:</strong> This will permanently delete your custodial wallet and any remaining balance. 
+                    Make sure to withdraw all funds before proceeding.
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={cancelDeleteWallet}
+                className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg hover:bg-gray-600 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteWallet}
+                className="flex-1 px-4 py-2 bg-red-600 border border-red-500 rounded-lg hover:bg-red-700 transition-colors"
+              >
+                Delete Wallet
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Demo Controls Panel */}
       <div className="fixed bottom-6 right-6 bg-gray-900 border border-gray-800 rounded-xl p-6 shadow-2xl">
