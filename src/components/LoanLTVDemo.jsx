@@ -101,24 +101,25 @@ const mockAPI = {
    */
   getCurrentBTCPrice: async () => {
     await new Promise(resolve => setTimeout(resolve, 100));
-    return 45230;
+    return 300000;
   }
 };
 
 /**
  * Custom hook for simulating real-time Bitcoin price feed
  * Simulates price fluctuations for demo purposes
+ * Price range: 100k - 500k for testing with smaller amounts
  */
-const usePriceFeed = (initialPrice = 45230) => {
+const usePriceFeed = (initialPrice = 300000) => {
   const [price, setPrice] = useState(initialPrice);
-  const [priceChange, setPriceChange] = useState(-2.3);
+  const [priceChange, setPriceChange] = useState(-0.5);
   
   useEffect(() => {
     // Simulate price fluctuations every 5 seconds
     const interval = setInterval(() => {
       setPrice(prev => {
-        const change = (Math.random() - 0.5) * 200; // Random change up to ±$100
-        const newPrice = Math.max(30000, Math.min(60000, prev + change)); // Keep within bounds
+        const change = (Math.random() - 0.5) * 20000; // Random change up to ±$10,000
+        const newPrice = Math.max(100000, Math.min(500000, prev + change)); // Keep within 100k-500k range
         setPriceChange(((newPrice - prev) / prev) * 100);
         return newPrice;
       });
