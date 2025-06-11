@@ -25,7 +25,7 @@ const WalletSetupModal = ({ show, onClose, walletState }) => {
     setLnurlwString,
     setupCustodialWallet,
     setupSelfCustodialWallet,
-    lnbitsAPI
+    voltageAPI
   } = walletState;
 
   // Don't render if modal should not be shown
@@ -76,7 +76,7 @@ const WalletSetupModal = ({ show, onClose, walletState }) => {
           <CustodialSetup
             custodialWallet={custodialWallet}
             loadingWallet={loadingWallet}
-            lnbitsConfig={lnbitsAPI.config}
+            voltageConfig={voltageAPI.config}
             onBack={() => setWalletType(null)}
             onSetup={handleCustodialSetup}
           />
@@ -243,12 +243,12 @@ const SelfCustodialSetup = ({
 
 /**
  * CustodialSetup Component
- * Handles LNbits custodial wallet setup
+ * Handles Voltage custodial wallet setup
  */
 const CustodialSetup = ({
   custodialWallet,
   loadingWallet,
-  lnbitsConfig,
+  voltageConfig,
   onBack,
   onSetup
 }) => (
@@ -265,10 +265,10 @@ const CustodialSetup = ({
       <div className="flex items-start gap-3">
         <ExternalLink className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
         <div>
-          <h5 className="font-semibold text-blue-400 mb-1">LNbits Demo Wallet</h5>
+          <h5 className="font-semibold text-blue-400 mb-1">Voltage Custodial Wallet</h5>
           <p className="text-blue-300 text-sm">
-            This will connect to a demo LNbits wallet. In production, you would create your own wallet
-            or connect to your preferred custodial service.
+            This will create a new custodial wallet using the Voltage API. Your funds will be managed
+            by Voltage's infrastructure with enterprise-grade security.
           </p>
         </div>
       </div>
@@ -281,7 +281,7 @@ const CustodialSetup = ({
         <div className="space-y-2 text-sm">
           <div className="flex justify-between">
             <span className="text-gray-400">Wallet ID:</span>
-            <span className="font-mono">{lnbitsConfig.walletId}</span>
+            <span className="font-mono">{custodialWallet.id}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-400">Balance:</span>
@@ -291,11 +291,11 @@ const CustodialSetup = ({
         
         {/* Open wallet button */}
         <button
-          onClick={() => window.open(`${lnbitsConfig.baseUrl}/wallet?usr=${lnbitsConfig.walletId}`, '_blank')}
+          onClick={() => window.open(`${voltageConfig.baseUrl}/organizations/${voltageConfig.organizationId}/wallets/${custodialWallet.id}`, '_blank')}
           className="w-full mt-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors flex items-center justify-center gap-2 text-sm"
         >
           <ExternalLink className="w-4 h-4" />
-          Open Wallet in LNbits
+          Open Wallet in Voltage
         </button>
       </div>
     )}
@@ -308,12 +308,12 @@ const CustodialSetup = ({
             <Wallet className="w-5 h-5 text-blue-400" />
           </div>
           <div>
-            <h3 className="font-semibold text-blue-400">LNbits Custodial Wallet</h3>
-            <p className="text-xs text-gray-400">Managed Lightning wallet</p>
+            <h3 className="font-semibold text-blue-400">Voltage Custodial Wallet</h3>
+            <p className="text-xs text-gray-400">Enterprise Lightning wallet</p>
           </div>
         </div>
         <p className="text-sm text-gray-300 mb-3">
-          We'll create a dedicated custodial wallet for you on our LNbits demo instance. 
+          We'll create a dedicated custodial wallet for you using the Voltage API. 
           This wallet will be used for loan collateral management and automatic liquidations.
         </p>
         <div className="bg-gray-900/50 rounded p-3 text-xs text-gray-400">

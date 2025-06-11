@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useLNbitsAPI } from './useLNbitsAPI';
+import { useVoltageAPI } from './useVoltageAPI';
 
 // Local storage keys for wallet persistence
 const WALLET_STORAGE_KEYS = {
@@ -17,8 +17,8 @@ const WALLET_STORAGE_KEYS = {
  * Includes localStorage persistence and automatic restoration on startup
  */
 export const useWalletSetup = (logger = null) => {
-  // LNbits API hook with logger
-  const lnbitsAPI = useLNbitsAPI(logger);
+  // Voltage API hook with logger
+  const voltageAPI = useVoltageAPI(logger);
 
   const log = (level, message, data) => {
     if (logger) {
@@ -100,16 +100,16 @@ export const useWalletSetup = (logger = null) => {
   };
 
   /**
-   * Restores custodial wallet details from LNbits API
+   * Restores custodial wallet details from Voltage API
    */
   const restoreCustodialWallet = async () => {
     try {
       log('wallet', '🔍 Checking for existing custodial wallet...');
-      const existingWallet = lnbitsAPI.getUserWallet();
+      const existingWallet = voltageAPI.getUserWallet();
       
       if (existingWallet) {
         // Get fresh wallet details
-        const walletDetails = await lnbitsAPI.getOrCreateUserWallet();
+        const walletDetails = await voltageAPI.getOrCreateUserWallet();
         setCustodialWallet(walletDetails);
         log('success', `✅ Custodial wallet restored: ${walletDetails.name}, Balance: ${walletDetails.balanceSats} sats`);
         return walletDetails;
@@ -168,16 +168,16 @@ export const useWalletSetup = (logger = null) => {
   }, []); // Empty dependency array - run only on mount
 
   /**
-   * Sets up a custodial wallet using LNbits
+   * Sets up a custodial wallet using Voltage API
    * Fetches wallet details and configures the wallet
    */
   const setupCustodialWallet = async () => {
     setLoadingWallet(true);
-    log('wallet', '🔧 Setting up LNbits custodial wallet...');
+    log('wallet', '🔧 Setting up Voltage custodial wallet...');
     
     try {
       // Create or get existing user wallet
-      const walletDetails = await lnbitsAPI.getOrCreateUserWallet();
+      const walletDetails = await voltageAPI.getOrCreateUserWallet();
       setCustodialWallet(walletDetails);
       
       const newConfig = {
@@ -259,7 +259,7 @@ export const useWalletSetup = (logger = null) => {
     // Clear user wallet data if it was custodial
     if (walletConfig?.type === 'custodial') {
       log('info', '🗑️ Clearing custodial wallet data...');
-      lnbitsAPI.clearUserData();
+      voltageAPI.clearUserData();
     }
     
     // Clear localStorage
@@ -314,6 +314,6 @@ export const useWalletSetup = (logger = null) => {
     closeWalletSetup,
 
     // API
-    lnbitsAPI
+    voltageAPI
   };
 }; 

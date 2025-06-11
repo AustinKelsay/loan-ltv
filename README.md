@@ -88,13 +88,13 @@ The application starts with a clean state to allow users to experience the full 
 2. **Wallet Setup**: Users must configure a Lightning wallet before making top-ups
 3. **Top-up Testing**: Add sats to collateral using Lightning payments
 4. **Market Simulation**: Use demo controls to simulate price crashes and test margin calls
-5. **Auto-Liquidation** (Custodial Only): When LTV hits 85%+, custodial wallets automatically send their full balance to `austin@bitcoinpleb.dev`
+5. **Auto-Liquidation** (Custodial Only): When LTV hits 85%+, custodial wallets automatically send their full balance to `refund@lnurl.mutinynet.com`
 
 ### Full Demo Flow Example
 1. **Setup LNbits Custodial Wallet**: Configure with demo credentials
 2. **Fund Wallet**: Add 200 sats to the LNbits wallet (creates invoice TO wallet)
 3. **Market Crash**: Use "Crash -20%" button to simulate price drop
-4. **Auto-Liquidation Trigger**: When LTV reaches 85%, wallet automatically pays out to `austin@bitcoinpleb.dev`
+4. **Auto-Liquidation Trigger**: When LTV reaches 85%, wallet automatically pays out to `refund@lnurl.mutinynet.com`
 5. **Transaction History**: View the liquidation in transaction history with LTV details
 
 ## Component Architecture
@@ -103,7 +103,7 @@ The application starts with a clean state to allow users to experience the full 
 ```javascript
 // All amounts in satoshis
 const [loan, setLoan] = useState(null); // collateral.amountSats
-const [topupAmount, setTopupAmount] = useState(5000000); // 5M sats = 0.05 BTC
+const [topupAmount, setTopupAmount] = useState(500000); // 500K sats = 0.005 BTC
 
 // Unit conversion utilities
 import { btcToSats, satsToUSD, formatSats } from '../utils/bitcoinUnits';
@@ -132,7 +132,7 @@ export const satsToUSD = (sats, btcPriceUSD) => satsToBtc(sats) * btcPriceUSD;
 3. Display Lightning invoice to user
 4. Poll LNbits API for payment status
 5. Update loan collateral on payment confirmation
-6. **Auto-Liquidation**: When LTV ≥ 85%, automatically send full wallet balance to `austin@bitcoinpleb.dev`
+6. **Auto-Liquidation**: When LTV ≥ 85%, automatically send full wallet balance to `refund@lnurl.mutinynet.com`
 
 #### Self-Custodial Wallet (NWC/LNURLW)
 1. Generate mock invoice (in production: use NWC/LNURLW protocols)

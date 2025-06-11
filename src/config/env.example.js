@@ -1,40 +1,45 @@
 /**
  * Environment Configuration Example
  * 
- * To use your own LNbits instance instead of the demo:
+ * To use your Voltage API setup instead of the demo:
  * 1. Create a .env file in the project root
  * 2. Add the following variables with your actual values:
  * 
- * # LNbits Instance URL (without trailing slash)
- * VITE_LNBITS_URL=https://your-lnbits-instance.com
+ * # Voltage API Configuration
+ * VITE_VOLTAGE_API_URL=https://voltageapi.com/v1
+ * VITE_VOLTAGE_PROXY_URL=http://localhost:3001/api/voltage
+ * VITE_VOLTAGE_API_KEY=your_api_key_here
+ * VITE_VOLTAGE_ORGANIZATION_ID=your_organization_id_here
+ * VITE_VOLTAGE_ENVIRONMENT_ID=your_environment_id_here
+ * VITE_VOLTAGE_LINE_OF_CREDIT_ID=your_line_of_credit_id_here
+ * VITE_VOLTAGE_NETWORK=mutinynet
  * 
- * # Admin Wallet Configuration
- * VITE_LNBITS_ADMIN_WALLET_ID=your_admin_wallet_id_here
- * VITE_LNBITS_ADMIN_KEY=your_admin_key_here
- * VITE_LNBITS_ADMIN_INVOICE_KEY=your_admin_invoice_key_here
+ * Networks available:
+ * - mainnet (production Bitcoin network)
+ * - testnet3 (Bitcoin testnet)
+ * - mutinynet (Signet-based testing network, recommended for demos)
  * 
- * # User Manager Extension Configuration
- * VITE_LNBITS_USER_MANAGER_ADMIN_KEY=your_user_manager_admin_key_here
+ * Setup Requirements:
+ * 1. Sign up for a Voltage account
+ * 2. Create an organization and environment
+ * 3. Set up a line of credit for wallet funding
+ * 4. Generate an API key with appropriate permissions
+ * 5. Note down your organization ID, environment ID, and line of credit ID
  * 
- * Demo Configuration (current settings for demo.lnbits.com):
- * VITE_LNBITS_URL=https://demo.lnbits.com
- * VITE_LNBITS_ADMIN_WALLET_ID=7b62a3019da5499ab307ff2bd350680d
- * VITE_LNBITS_ADMIN_KEY=711b71152ad14d67bcbfe3866d45d33f
- * VITE_LNBITS_ADMIN_INVOICE_KEY=921cbb1e491f4825b1e34f1e75cbc89d
- * VITE_LNBITS_USER_MANAGER_ADMIN_KEY=711b71152ad14d67bcbfe3866d45d33f
- * 
- * Requirements:
- * - LNbits instance with usermanager extension enabled
- * - Admin access to create and manage user wallets
- * - Valid Lightning node connection for payments
+ * API Key Permissions Required:
+ * - Wallet creation and management
+ * - Payment sending and receiving
+ * - Balance and transaction history access
  */
 
 // This file is for documentation only
-// The actual configuration is loaded from environment variables in useLNbitsAPI.js
+// The actual configuration is loaded from environment variables in useVoltageAPI.js
 export const ENV_CONFIG_EXAMPLE = {
-  LNBITS_URL: 'https://your-lnbits-instance.com',
-  ADMIN_WALLET_ID: 'your_admin_wallet_id_here',
-  ADMIN_KEY: 'your_admin_key_here',
-  ADMIN_INVOICE_KEY: 'your_admin_invoice_key_here',
-  USER_MANAGER_ADMIN_KEY: 'your_user_manager_admin_key_here'
+  VOLTAGE_API_URL: 'https://voltageapi.com/v1',
+  VOLTAGE_PROXY_URL: 'http://localhost:3001/api/voltage',
+  VOLTAGE_API_KEY: 'your_api_key_here',
+  VOLTAGE_ORGANIZATION_ID: 'your_organization_id_here',
+  VOLTAGE_ENVIRONMENT_ID: 'your_environment_id_here',
+  VOLTAGE_LINE_OF_CREDIT_ID: 'your_line_of_credit_id_here',
+  VOLTAGE_NETWORK: 'mutinynet'
 }; 

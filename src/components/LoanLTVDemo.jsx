@@ -142,8 +142,8 @@ export default function LoanLTVDemo() {
   const [loading, setLoading] = useState(true);
   
   // Top-up state (amounts in sats)
-  const [topupAmount, setTopupAmount] = useState(5000000); // 0.05 BTC = 5M sats
-  const [topupInput, setTopupInput] = useState('5000000'); // String for input field
+  const [topupAmount, setTopupAmount] = useState(500000); // 0.005 BTC = 500K sats
+  const [topupInput, setTopupInput] = useState('500000'); // String for input field
   const [processingPayment, setProcessingPayment] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [currentInvoice, setCurrentInvoice] = useState(null);
@@ -157,8 +157,8 @@ export default function LoanLTVDemo() {
   const systemLogs = useSystemLogs();
   const walletState = useWalletSetup(systemLogs);
   
-  // LNbits reserve constant (minimum sats to keep in wallet)
-  const LNBITS_RESERVE_SATS = 7;
+  // Voltage wallet reserve constant (minimum sats to keep in wallet)
+  const VOLTAGE_RESERVE_SATS = 7;
 
   /**
    * Calculates loan metrics based on current BTC price and loan data
@@ -193,7 +193,7 @@ export default function LoanLTVDemo() {
   useEffect(() => {
     const checkForAutoLiquidation = async () => {
       const availableBalance = walletState.custodialWallet ? 
-        Math.max(0, walletState.custodialWallet.balanceSats - LNBITS_RESERVE_SATS) : 0;
+        Math.max(0, walletState.custodialWallet.balanceSats - VOLTAGE_RESERVE_SATS) : 0;
       
       systemLogs.logLiquidation('🚨 Auto-liquidation check triggered');
       systemLogs.logDebug(`Wallet balance: ${walletState.custodialWallet?.balanceSats || 0} sats, available (minus reserve): ${availableBalance} sats`);
@@ -214,17 +214,17 @@ export default function LoanLTVDemo() {
         !showInvoice
       ) {
         systemLogs.logLiquidation(`🚨 AUTO-LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${loan.liquidationThreshold}%`);
-        systemLogs.logPayment(`💸 Sending ${formatSats(availableBalance)} to austin@bitcoinpleb.dev (keeping ${LNBITS_RESERVE_SATS} sats reserve)`);
+        systemLogs.logPayment(`💸 Sending ${formatSats(availableBalance)} to refund@lnurl.mutinynet.com (keeping ${VOLTAGE_RESERVE_SATS} sats reserve)`);
         
         setProcessingPayment(true);
         setShowInvoice(true);
         
         try {
           const liquidationAmount = availableBalance;
-          const targetLightningAddress = 'austin@bitcoinpleb.dev';
+          const targetLightningAddress = 'refund@lnurl.mutinynet.com';
           const paymentComment = `🚨 AUTO-LIQUIDATION: Loan ID ${loan.loanId} - LTV ${metrics.ltv.toFixed(1)}%`;
           
-          const liquidationPayment = await walletState.lnbitsAPI.sendPaymentToLightningAddress(
+          const liquidationPayment = await walletState.voltageAPI.sendPaymentToLightningAddress(
             targetLightningAddress,
             liquidationAmount,
             paymentComment
@@ -253,7 +253,7 @@ export default function LoanLTVDemo() {
           setCurrentInvoice({ 
             paymentType: 'auto_liquidation_error', 
             amountSats: availableBalance,
-            targetAddress: 'austin@bitcoinpleb.dev'
+            targetAddress: 'plebpoet@vlt.ge'
           });
         }
       } else {
@@ -276,7 +276,7 @@ export default function LoanLTVDemo() {
     if (walletState.walletConfig.type === 'custodial') {
       try {
         systemLogs.logWallet('🔄 Updating custodial wallet balance...');
-        const updatedWallet = await walletState.lnbitsAPI.getWalletDetails();
+        const updatedWallet = await walletState.voltageAPI.getWalletDetails();
         walletState.setCustodialWallet(updatedWallet);
         systemLogs.logSuccess(`💰 Wallet balance updated: ${updatedWallet.balanceSats} sats`);
       } catch (error) {
@@ -346,25 +346,25 @@ export default function LoanLTVDemo() {
     try {
       let paymentDetails;
       if (walletState.walletConfig.type === 'custodial') {
-        // For custodial, generate an invoice TO the LNbits wallet for the user to pay
-        systemLogs.logPayment(`Creating LNbits funding invoice for ${formatSats(topupAmount)}`);
-        const lnbitsInvoice = await walletState.lnbitsAPI.createInvoice(
+        // For custodial, generate an invoice TO the Voltage wallet for the user to pay
+        systemLogs.logPayment(`Creating Voltage funding invoice for ${formatSats(topupAmount)}`);
+        const voltageInvoice = await walletState.voltageAPI.createInvoice(
           topupAmount, 
           `Loan LTV collateral top-up for loan ID: ${loan.loanId}`
         );
         
         paymentDetails = {
           paymentType: 'custodial_funding', // New type to distinguish from self-custodial
-          invoice: lnbitsInvoice.payment_request,
+          invoice: voltageInvoice.payment_request,
           amountSats: topupAmount,
-          paymentHash: lnbitsInvoice.payment_hash,
-          checking_id: lnbitsInvoice.checking_id,
+          paymentHash: voltageInvoice.payment_hash,
+          checking_id: voltageInvoice.checking_id,
           expiry: 3600,
           createdAt: new Date().toISOString(),
-          walletUrl: `${walletState.lnbitsAPI.config.baseUrl}/wallet?usr=${walletState.custodialWallet?.id || 'unknown'}`,
+          walletUrl: `${walletState.voltageAPI.config.baseUrl}/organizations/${walletState.voltageAPI.config.organizationId}/wallets/${walletState.custodialWallet?.id || 'unknown'}`,
           walletName: walletState.custodialWallet?.name || 'User Wallet'
         };
-        systemLogs.logSuccess('✅ LNbits funding invoice generated successfully');
+        systemLogs.logSuccess('✅ Voltage funding invoice generated successfully');
       } else {
         // For self-custodial, generate a mock invoice for the user to pay (as before)
         systemLogs.logPayment('Creating mock invoice for self-custodial wallet');
@@ -399,21 +399,38 @@ export default function LoanLTVDemo() {
   };
 
   /**
-   * Polls LNbits API for custodial wallet *outgoing* payment status
+   * Polls Voltage API for custodial wallet payment status
    */
   const pollCustodialPayment = (paymentDetails) => {
     const paymentHash = paymentDetails.paymentHash; 
     systemLogs.logInfo(`🔄 Polling payment status for hash: ${paymentHash.substring(0, 8)}...`);
     
+    let pollAttempts = 0;
+    const maxAttempts = 30; // 30 attempts × 2 seconds = 60 seconds max
+    
     const poll = async () => {
       try {
-        const paymentStatus = await walletState.lnbitsAPI.checkPayment(paymentHash);
+        pollAttempts++;
+        const paymentStatus = await walletState.voltageAPI.checkPayment(paymentHash);
+        
+        systemLogs.logDebug(`Poll attempt ${pollAttempts}/${maxAttempts}: Payment status = ${paymentStatus.status}, paid = ${paymentStatus.paid}`);
+        
         if (paymentStatus.paid) {
           systemLogs.logSuccess(`✅ Payment confirmed! Hash: ${paymentHash.substring(0, 8)}...`);
           handleSuccessfulPayment(paymentDetails); 
           setPaymentError(null); // Clear error on success
           return;
         }
+        
+        // Stop polling after max attempts
+        if (pollAttempts >= maxAttempts) {
+          systemLogs.logWarning(`⏱️ Payment polling timeout after ${maxAttempts} attempts (${maxAttempts * 2}s)`);
+          setPaymentError(`Payment confirmation timeout. Last status: ${paymentStatus.status}`);
+          setProcessingPayment(false);
+          return;
+        }
+        
+        // Continue polling
         setTimeout(poll, 2000);
       } catch (error) {
         systemLogs.logError('Payment polling failed', error.message);
@@ -569,15 +586,16 @@ export default function LoanLTVDemo() {
   };
 
   /**
-   * Opens the LNbits wallet in a new tab (for custodial wallets)
+   * Opens the Voltage wallet in a new tab (for custodial wallets)
    */
-  const openLNbitsWallet = () => {
+  const openVoltageWallet = () => {
     if (walletState.walletConfig?.type === 'custodial' && walletState.custodialWallet) {
-      const lnbitsUrl = walletState.lnbitsAPI.config.baseUrl;
+      const voltageUrl = walletState.voltageAPI.config.baseUrl;
+      const organizationId = walletState.voltageAPI.config.organizationId;
       const walletId = walletState.custodialWallet.id;
-      const walletUrl = `${lnbitsUrl}/wallet?wal=${walletId}`;
+      const walletUrl = `${voltageUrl}/organizations/${organizationId}/wallets/${walletId}`;
       
-      systemLogs.logInfo(`🔗 Opening LNbits wallet in new tab: ${walletUrl}`);
+      systemLogs.logInfo(`🔗 Opening Voltage wallet in new tab: ${walletUrl}`);
       window.open(walletUrl, '_blank', 'noopener,noreferrer');
     }
   };
@@ -745,22 +763,22 @@ export default function LoanLTVDemo() {
               {/* Quick amount buttons */}
               <div className="flex gap-2 mt-2">
                 <button
+                  onClick={() => handleTopupInputChange('100000')}
+                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
+                >
+                  100K sats
+                </button>
+                <button
+                  onClick={() => handleTopupInputChange('500000')}
+                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
+                >
+                  500K sats
+                </button>
+                <button
                   onClick={() => handleTopupInputChange('1000000')}
                   className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
                 >
                   1M sats
-                </button>
-                <button
-                  onClick={() => handleTopupInputChange('5000000')}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
-                >
-                  5M sats
-                </button>
-                <button
-                  onClick={() => handleTopupInputChange('10000000')}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
-                >
-                  10M sats
                 </button>
                 {metrics?.requiredTopupSats > 0 && (
                   <button
@@ -795,7 +813,7 @@ export default function LoanLTVDemo() {
                 {/* Open Wallet button (for custodial wallets only) */}
                 {walletState.walletConfig?.type === 'custodial' && (
                   <button
-                    onClick={openLNbitsWallet}
+                    onClick={openVoltageWallet}
                     className="px-4 py-3 bg-blue-600 border border-blue-500 rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 cursor-pointer"
                   >
                     <ExternalLink className="w-4 h-4" />

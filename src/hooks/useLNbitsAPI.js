@@ -333,7 +333,7 @@ export const useLNbitsAPI = (logger = null) => {
 
   /**
    * Sends a payment from the user's LNbits wallet to a Lightning Address.
-   * @param {string} lightningAddress - The recipient's Lightning Address (e.g., austin@bitcoinpleb.dev)
+   * @param {string} lightningAddress - The recipient's Lightning Address (e.g., refund@lnurl.mutinynet.com)
    * @param {number} amountSats - Amount to send in satoshis
    * @param {string} comment - Optional comment for the payment
    * @returns {Promise<Object>} Payment details from LNbits, including payment_hash
