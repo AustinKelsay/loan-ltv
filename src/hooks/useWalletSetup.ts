@@ -1,3 +1,4 @@
+// @ts-nocheck - Temporary during migration to Next.js
 import { useState, useEffect } from 'react';
 import { useVoltageAPI } from './useVoltageAPI';
 

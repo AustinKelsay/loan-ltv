@@ -1,3 +1,4 @@
+// @ts-nocheck - Temporary during migration to Next.js
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, ChevronUp, Terminal, Copy, Trash2 } from 'lucide-react';
 

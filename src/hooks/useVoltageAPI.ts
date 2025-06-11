@@ -6,17 +6,19 @@
  * Supports user wallet creation and management via Voltage API
  */
 
+// @ts-nocheck - Temporary during migration to Next.js
 import { satsToMillisats, millisatsToSats } from '../utils/bitcoinUnits';
+import type { Logger, WalletData, ApiRequestOptions, VoltageApiResponse } from '../types';
 
 // Voltage API configuration
 const VOLTAGE_CONFIG = {
-  baseUrl: '/api/voltage', // Uses Vite proxy in development
-  directUrl: import.meta.env.VITE_VOLTAGE_API_URL || 'https://voltageapi.com/v1',
-  apiKey: import.meta.env.VITE_VOLTAGE_API_KEY,
-  organizationId: import.meta.env.VITE_VOLTAGE_ORGANIZATION_ID,
-  environmentId: import.meta.env.VITE_VOLTAGE_ENVIRONMENT_ID,
-  lineOfCreditId: import.meta.env.VITE_VOLTAGE_LINE_OF_CREDIT_ID,
-  network: import.meta.env.VITE_VOLTAGE_NETWORK || 'mutinynet' // mainnet, testnet3, mutinynet
+  baseUrl: '/api/voltage', // Uses Next.js API route proxy
+  directUrl: process.env.NEXT_PUBLIC_VOLTAGE_API_URL || 'https://voltageapi.com/v1',
+  apiKey: process.env.NEXT_PUBLIC_VOLTAGE_API_KEY,
+  organizationId: process.env.NEXT_PUBLIC_VOLTAGE_ORGANIZATION_ID,
+  environmentId: process.env.NEXT_PUBLIC_VOLTAGE_ENVIRONMENT_ID,
+  lineOfCreditId: process.env.NEXT_PUBLIC_VOLTAGE_LINE_OF_CREDIT_ID,
+  network: process.env.NEXT_PUBLIC_VOLTAGE_NETWORK || 'mutinynet' // mainnet, testnet3, mutinynet
 };
 
 // Local storage keys
@@ -25,10 +27,14 @@ const STORAGE_KEYS = {
   USER_ID: 'voltage_user_id'
 };
 
-export const useVoltageAPI = (logger = null) => {
-  const log = (level, message, data) => {
+export const useVoltageAPI = (logger: Logger | null = null) => {
+  const log = (level: string, message: string, data?: any) => {
     if (logger) {
-      logger[`log${level.charAt(0).toUpperCase() + level.slice(1)}`]?.(message, data);
+      const methodName = `log${level.charAt(0).toUpperCase() + level.slice(1)}` as keyof Logger;
+      const logMethod = logger[methodName];
+      if (logMethod) {
+        logMethod(message, data);
+      }
     } else {
       console.log(`[${level.toUpperCase()}] ${message}`, data || '');
     }
@@ -37,7 +43,7 @@ export const useVoltageAPI = (logger = null) => {
   /**
    * Make authenticated API request to Voltage
    */
-  const makeVoltageRequest = async (endpoint, options = {}) => {
+  const makeVoltageRequest = async (endpoint: string, options: ApiRequestOptions = {}) => {
     const url = `${VOLTAGE_CONFIG.baseUrl}${endpoint}`;
     const headers = {
       'X-Api-Key': VOLTAGE_CONFIG.apiKey,
@@ -328,18 +334,36 @@ export const useVoltageAPI = (logger = null) => {
     try {
       const payment = await getPaymentDetails(paymentId);
       
-      // Debug: Log the actual status to understand what Voltage returns
-      log('debug', `Payment ${paymentId} status: ${payment.status}`, payment);
+      // Debug: Log the full payment object to understand what Voltage returns
+      log('debug', `Payment ${paymentId.substring(0, 8)}... full details:`, payment);
       
       // Convert status to paid boolean based on Voltage API documentation
       // For receiving payments: 'completed' means payment received successfully
       // For sending payments: 'completed' means payment sent successfully
-      const paid = payment.status === 'completed' || payment.status === 'succeeded';
+      let paid = payment.status === 'completed' || payment.status === 'succeeded';
+      
+      // Additional check: For receive payments, also check if there are any receipts/outflows
+      // indicating the payment was actually received
+      if (!paid && payment.direction === 'receive' && payment.data) {
+        // Check for outflows (onchain) or other completion indicators
+        if (payment.data.outflows && payment.data.outflows.length > 0) {
+          paid = true;
+          log('debug', `Payment marked as paid due to outflows present`);
+        }
+        // Check for receipts (another completion indicator)
+        if (payment.data.receipts && payment.data.receipts.length > 0) {
+          paid = true;
+          log('debug', `Payment marked as paid due to receipts present`);
+        }
+      }
       
       // Add sats conversion if amount is present
       if (payment.data && payment.data.amount_msats) {
         payment.amountSats = millisatsToSats(payment.data.amount_msats);
         payment.amountMillisats = payment.data.amount_msats;
+      } else if (payment.data && payment.data.amount_sats) {
+        payment.amountSats = payment.data.amount_sats;
+        payment.amountMillisats = satsToMillisats(payment.data.amount_sats);
       }
       
       return {

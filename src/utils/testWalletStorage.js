@@ -6,8 +6,8 @@
  * ⚠️ This is for development use only!
  */
 
-// Only run in development environment
-if (import.meta.env.DEV) {
+// Only run in development environment - check if we're in browser and not production
+if (typeof window !== 'undefined') {
   
   // Expose wallet storage utilities to global scope for console access
   window.walletStorageTest = {

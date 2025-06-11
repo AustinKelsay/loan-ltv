@@ -1,3 +1,4 @@
+// @ts-nocheck - Temporary during migration to Next.js
 import React from 'react';
 import { Wallet, Settings, ExternalLink, CheckCircle } from 'lucide-react';
 import { formatSats } from '../utils/bitcoinUnits';

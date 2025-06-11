@@ -1,3 +1,4 @@
+// @ts-nocheck - Temporary during migration to Next.js
 import React, { useState, useEffect, useCallback } from 'react';
 import { Zap, AlertTriangle, TrendingDown, CheckCircle, Wallet, Settings, XCircle, ExternalLink, Trash2 } from 'lucide-react';
 import { useWalletSetup } from '../hooks/useWalletSetup';
@@ -13,8 +14,7 @@ import {
   isValidSatsAmount 
 } from '../utils/bitcoinUnits';
 
-// Import test utility for wallet storage testing (development only)
-import '../utils/testWalletStorage';
+// Test utility will be loaded dynamically on client side only
 
 /**
  * Mock API for loan operations
@@ -290,6 +290,11 @@ export default function LoanLTVDemo() {
    * Loads initial loan data and transaction history
    */
   useEffect(() => {
+    // Load test utility on client side only
+    if (typeof window !== 'undefined') {
+      import('../utils/testWalletStorage').catch(console.error);
+    }
+    
     const loadData = async () => {
       try {
         const [loanData, txHistory] = await Promise.all([
@@ -408,13 +413,23 @@ export default function LoanLTVDemo() {
     
     let pollAttempts = 0;
     const maxAttempts = 30; // 30 attempts × 2 seconds = 60 seconds max
+    let pollingStopped = false; // Flag to stop polling
     
     const poll = async () => {
       try {
+        // Check if polling was stopped
+        if (pollingStopped) {
+          systemLogs.logInfo('🛑 Payment polling stopped by user');
+          setProcessingPayment(false);
+          return;
+        }
+        
         pollAttempts++;
         const paymentStatus = await walletState.voltageAPI.checkPayment(paymentHash);
         
-        systemLogs.logDebug(`Poll attempt ${pollAttempts}/${maxAttempts}: Payment status = ${paymentStatus.status}, paid = ${paymentStatus.paid}`);
+        // Log more detailed status information
+        systemLogs.logDebug(`🐛Payment ${paymentHash.substring(0, 8)}... status: ${paymentStatus.status}`);
+        systemLogs.logDebug(`🐛Poll attempt ${pollAttempts}/${maxAttempts}: Payment status = ${paymentStatus.status}, paid = ${paymentStatus.paid}`);
         
         if (paymentStatus.paid) {
           systemLogs.logSuccess(`✅ Payment confirmed! Hash: ${paymentHash.substring(0, 8)}...`);
@@ -423,22 +438,42 @@ export default function LoanLTVDemo() {
           return;
         }
         
+        // Check if payment has been in 'receiving' state for too long
+        if (paymentStatus.status === 'receiving' && pollAttempts > 15) {
+          systemLogs.logWarning(`⚠️ Payment has been in 'receiving' state for ${pollAttempts * 2}s. This might indicate the invoice hasn't been paid yet.`);
+        }
+        
         // Stop polling after max attempts
         if (pollAttempts >= maxAttempts) {
           systemLogs.logWarning(`⏱️ Payment polling timeout after ${maxAttempts} attempts (${maxAttempts * 2}s)`);
-          setPaymentError(`Payment confirmation timeout. Last status: ${paymentStatus.status}`);
+          
+          // Provide more helpful error message based on final status
+          let errorMessage = `Payment confirmation timeout. Last status: ${paymentStatus.status}`;
+          if (paymentStatus.status === 'receiving') {
+            errorMessage += '. The invoice may not have been paid yet. Please check if the payment was actually sent.';
+          }
+          
+          setPaymentError(errorMessage);
           setProcessingPayment(false);
           return;
         }
         
-        // Continue polling
-        setTimeout(poll, 2000);
+        // Continue polling if not stopped
+        if (!pollingStopped) {
+          setTimeout(poll, 2000);
+        }
       } catch (error) {
         systemLogs.logError('Payment polling failed', error.message);
         setPaymentError(`Payment polling failed: ${error.message || 'Could not confirm payment'}`);
         setProcessingPayment(false);
       }
     };
+    
+    // Store the stop function globally so it can be called from the modal
+    window.stopCurrentPolling = () => {
+      pollingStopped = true;
+    };
+    
     setTimeout(poll, 2000);
   };
 
@@ -544,9 +579,24 @@ export default function LoanLTVDemo() {
   };
 
   /**
+   * Stops the current payment polling
+   */
+  const stopPolling = () => {
+    if (window.stopCurrentPolling) {
+      window.stopCurrentPolling();
+      systemLogs.logInfo('🛑 Payment polling stopped by user');
+      setPaymentError('Payment polling stopped by user');
+    }
+  };
+
+  /**
    * Closes invoice modal and resets payment state
    */
   const closeInvoiceModal = () => {
+    // Stop any ongoing polling when closing modal
+    if (window.stopCurrentPolling) {
+      window.stopCurrentPolling();
+    }
     setShowInvoice(false);
     setProcessingPayment(false);
     setCurrentInvoice(null);
@@ -896,6 +946,7 @@ export default function LoanLTVDemo() {
         processingPayment={processingPayment}
         paymentError={paymentError}
         onClose={closeInvoiceModal}
+        onStopPolling={stopPolling}
       />
 
       {/* Delete Wallet Confirmation Modal */}

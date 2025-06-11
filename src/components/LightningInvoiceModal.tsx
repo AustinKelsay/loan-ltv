@@ -1,3 +1,4 @@
+// @ts-nocheck - Temporary during migration to Next.js
 import React from 'react';
 import { Clock, Copy, Send, XCircle, CheckCircle, ExternalLink } from 'lucide-react';
 import { satsToUSD, formatSats } from '../utils/bitcoinUnits';
@@ -24,7 +25,8 @@ const LightningInvoiceModal = ({
   btcPrice, 
   processingPayment, 
   paymentError, 
-  onClose 
+  onClose,
+  onStopPolling 
 }) => {
   if (!show || !invoice) {
     // If modal is shown due to an error without full invoice details (e.g. balance check failed)
@@ -131,7 +133,7 @@ const LightningInvoiceModal = ({
         {!isErrorState && !isOutgoingPayment && !isSuccessState && <ExpiryInfo />}
         
         {/* Status/Error Display Area */}
-        {processingPayment && <PaymentStatus isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} />}
+        {processingPayment && <PaymentStatus isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} onStopPolling={onStopPolling} />}
         {isErrorState && <ErrorDisplay message={paymentError} />}
         {isSuccessState && <SuccessDisplay isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} />}
         
@@ -289,17 +291,27 @@ const ExpiryInfo = () => (
 
 /**
  * PaymentStatus Component
- * Shows payment processing status with loading animation
+ * Shows payment processing status with loading animation and stop button
  */
-const PaymentStatus = ({ isOutgoing, isCustodial }) => {
+const PaymentStatus = ({ isOutgoing, isCustodial, onStopPolling }) => {
   let message = 'Waiting for incoming payment...';
   if (isOutgoing) message = 'Processing payment... Please wait.';
   if (isCustodial) message = 'Waiting for wallet funding...';
   
   return (
-    <div className="flex items-center justify-center gap-2 text-green-400 my-4 py-3 bg-green-900/30 rounded-md text-sm">
-      <div className="animate-spin rounded-full h-4 w-4 border-2 border-green-400 border-t-transparent"></div>
-      <span>{message}</span>
+    <div className="my-4">
+      <div className="flex items-center justify-center gap-2 text-green-400 py-3 bg-green-900/30 rounded-md text-sm">
+        <div className="animate-spin rounded-full h-4 w-4 border-2 border-green-400 border-t-transparent"></div>
+        <span>{message}</span>
+      </div>
+      {onStopPolling && (
+        <button
+          onClick={onStopPolling}
+          className="w-full mt-2 py-2 px-4 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md transition-colors"
+        >
+          Stop Polling
+        </button>
+      )}
     </div>
   );
 };
