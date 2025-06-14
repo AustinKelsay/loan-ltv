@@ -127,7 +127,7 @@ const WalletTypeSelection = ({ onSelectType }) => (
           <h4 className="text-lg font-semibold">Custodial</h4>
         </div>
         <p className="text-gray-400 text-sm">
-          Use a managed wallet service (LNbits demo). Quick setup but the service holds your funds.
+                      Use a managed wallet service (Voltage demo). Quick setup but the service holds your funds.
           Great for testing and small amounts.
         </p>
       </button>

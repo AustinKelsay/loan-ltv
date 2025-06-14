@@ -1,157 +1,123 @@
-# Loan Lightning Topup Visualizer (loan-ltv)
+# ⚡ Loan Lightning Topup Visualizer (loan-ltv)
 
-This project is a React application demonstrating a loan interface with Bitcoin collateral and Lightning Network top-up functionality. The app visualizes loan-to-value (LTV) ratios and allows users to manage their Bitcoin-backed loans through Lightning payments.
+A comprehensive Bitcoin-backed loan management platform demonstrating **dual liquidation thresholds**, **Lightning Network integration**, and **complete state persistence**. Experience real-time LTV monitoring with Lightning Network collateral top-ups and automatic liquidation mechanisms.
 
-**All amounts in the application are denominated in satoshis (sats) for precision and clarity.**
+## 📊 Demo Overview
 
-## Prerequisites
+**Core Functionality**: Manage Bitcoin-backed loans with Lightning Network top-up capabilities, featuring two distinct liquidation thresholds for different risk management scenarios.
 
-- Node.js (v18 or later recommended)
-- npm
+**Key Innovation**: Lightning wallet funds contribute to total collateral value, demonstrating advanced risk management where users can add instant liquidity while managing liquidation exposure.
 
-## Setup
+## ✨ Key Features
 
-1. Clone the repository (if you haven't already).
-2. Navigate to the project directory:
-   ```bash
-   cd loan-ltv
-   ```
-3. Install dependencies:
-   ```bash
-   npm install
-   ```
+### 🎯 **Advanced Risk Management**
+- **Dual Liquidation System**: 85% LTV auto-liquidates Lightning wallet, 90% LTV triggers full loan liquidation
+- **Lightning Collateral**: Lightning wallet balance contributes to total collateral value
+- **Market Simulation**: Price volatility simulation to demonstrate liquidation scenarios
+- **Real Lightning Payments**: Actual Bitcoin transactions via Voltage/LNbits integration
 
-## Running the Development Server
+### 💾 **Complete Persistence**
+- **Full State Management**: Wallet configurations, transactions, and loan state persist across browser sessions
+- **Transaction History**: All Lightning payments, liquidations, and market events are permanently saved
+- **Session Continuity**: Close browser and return later - everything exactly as you left it
+- **Easy Reset**: Start fresh demos with one-click data reset
 
-To start the development server, run:
+### ⚡ **Lightning Network Integration**
+- **Custodial Wallets**: Real LNbits integration with live balance tracking
+- **Self-Custodial Support**: NWC and LNURLW protocol integration (demo mode)
+- **Auto-Liquidation**: Custodial wallets automatically send funds to `austin@vlt.ge` when triggered
+- **Real-time Updates**: Live payment detection and balance synchronization
+
+## 🚀 Quick Start
 
 ```bash
+# Clone and setup
+git clone [repository-url]
+cd loan-ltv
+npm install
 npm run dev
 ```
 
-This will typically start the application on `http://localhost:5173` (Vite's default) or another port if 5173 is busy.
+Open `http://localhost:3000` and explore the demo!
 
-## Project Structure
+## 🔧 Demo Walkthrough
 
-- `public/`: Static assets.
-- `src/`: Application source code.
-  - `components/`: React components
-    - `LoanLTVDemo.jsx`: Main loan visualization component
-    - `WalletSetupModal.jsx`: Modal for Lightning wallet configuration
-    - `LightningInvoiceModal.jsx`: Modal for invoice display and payment
-  - `hooks/`: Custom React hooks
-    - `useLNbitsAPI.js`: LNbits API integration for custodial wallets
-    - `useWalletSetup.js`: Wallet setup state management
-  - `utils/`: Utility functions
-    - `bitcoinUnits.js`: Bitcoin unit conversion utilities (BTC, sats, millisats)
-  - `App.jsx`: Main application component
-  - `main.jsx`: Entry point
-  - `index.css`: Tailwind CSS imports and global styles
-- `vite.config.js`: Vite configuration
+### **Initial Setup**
+1. **Default State**: Demo initializes with 1.5 BTC collateral and $50,000 loan (10% LTV)
+2. **Lightning Wallet Configuration**: Choose custodial (LNbits) or self-custodial (NWC/LNURLW)
+3. **Collateral Management**: Add Lightning funds to test dual liquidation thresholds
 
-## Features
+### **Testing Scenarios**
+1. **Risk Threshold Testing**: Observe behavior as LTV approaches 85-90% range
+2. **Market Volatility**: Use "Market Crash" button to simulate price volatility
+3. **Auto-Liquidation**: At 85% LTV, Lightning wallet auto-liquidates (funds sent to `austin@vlt.ge`)
+4. **Full Liquidation**: At 90% LTV, entire loan liquidates
 
-### Bitcoin Unit Handling
-- **Primary denomination**: Satoshis (sats) for all amounts
-- **Unit conversions**: Utilities for converting between BTC, sats, and millisats
-- **Display formatting**: Proper formatting with comma separators and unit labels
-- **Input validation**: Ensures valid satoshi amounts (positive integers)
+### **Demo Outcomes**
+- ✅ **Partial Liquidation**: Lightning wallet liquidated, main loan remains active
+- ⚠️ **Full Liquidation**: Main loan liquidated (90% LTV reached)
+- 🔄 **Reset**: Use "Reset All Data" to restart demo with fresh state
 
-### Wallet Options
+## 🏗️ Technical Architecture
 
-#### Self-Custodial Wallets
-- **NWC (Nostr Wallet Connect)** - Connect your own Lightning wallet via NWC protocol
-- **LNURLW (LNURL Withdraw)** - Use LNURL withdraw links for Lightning payments
+### **State Management**
+- `useTransactionStorage`: Persistent transaction and loan state management
+- `useWalletSetup`: Lightning wallet configuration and restoration
+- `useSystemLogs`: Real-time activity logging with persistence
 
-#### Custodial Wallets  
-- **LNbits Integration** - Demo integration with LNbits custodial Lightning wallet
-- Real-time payment detection and invoice management
-- Balance display in sats
+### **Core Components**
+- **LoanLTVDemo**: Main demo interface with dual liquidation mechanics
+- **WalletSetupModal**: Lightning wallet configuration (custodial/self-custodial)
+- **LightningInvoiceModal**: Payment interfaces with real-time polling
 
-### Loan Management
-- Real-time LTV (Loan-to-Value) monitoring with sats precision
-- Visual LTV meter with liquidation warnings
-- Market price simulation for testing scenarios
-- Automatic margin call alerts with required top-up amounts in sats
+### **Lightning Integration**
+- **Voltage API**: Real custodial wallet management and auto-liquidation
+- **NWC/LNURLW**: Self-custodial wallet protocols (demo implementation)
+- **Payment Detection**: Real-time Lightning payment confirmation
 
-### Lightning Network Integration
-- Instant Bitcoin collateral top-ups via Lightning Network
-- Support for both custodial and self-custodial wallets
-- Real-time payment polling and confirmation
-- Invoice generation and management with proper unit handling
+## 💰 Financial Mechanics
 
-## Demo Experience
+### **Liquidation Thresholds**
+- **85% LTV**: ⚡ Lightning wallet auto-liquidation
+- **90% LTV**: 💀 Main loan liquidation
 
-The application starts with a clean state to allow users to experience the full workflow:
-
-1. **Initial State**: One hardcoded transaction (initial Bitcoin deposit of 1.5 BTC / 150,000,000 sats)
-2. **Wallet Setup**: Users must configure a Lightning wallet before making top-ups
-3. **Top-up Testing**: Add sats to collateral using Lightning payments
-4. **Market Simulation**: Use demo controls to simulate price crashes and test margin calls
-5. **Auto-Liquidation** (Custodial Only): When LTV hits 85%+, custodial wallets automatically send their full balance to `refund@lnurl.mutinynet.com`
-
-### Full Demo Flow Example
-1. **Setup LNbits Custodial Wallet**: Configure with demo credentials
-2. **Fund Wallet**: Add 200 sats to the LNbits wallet (creates invoice TO wallet)
-3. **Market Crash**: Use "Crash -20%" button to simulate price drop
-4. **Auto-Liquidation Trigger**: When LTV reaches 85%, wallet automatically pays out to `refund@lnurl.mutinynet.com`
-5. **Transaction History**: View the liquidation in transaction history with LTV details
-
-## Component Architecture
-
-### Main Component (`LoanLTVDemo`)
-```javascript
-// All amounts in satoshis
-const [loan, setLoan] = useState(null); // collateral.amountSats
-const [topupAmount, setTopupAmount] = useState(500000); // 500K sats = 0.005 BTC
-
-// Unit conversion utilities
-import { btcToSats, satsToUSD, formatSats } from '../utils/bitcoinUnits';
+### **Collateral Calculation**
+```
+Total Collateral = Main Loan Collateral + Lightning Wallet Balance
+LTV = Loan Principal / (Total Collateral Value in USD)
 ```
 
-### Unit Conversion Utilities (`bitcoinUnits.js`)
+### **Risk Management Considerations**
+- Adding Lightning funds **reduces LTV** (safer loan, but more at risk in Lightning liquidation)
+- Market volatility **increases LTV** (closer to liquidation thresholds)
+- Lightning liquidation **removes collateral** (increases remaining LTV)
+
+## 🛠️ Development
+
+### **Testing Utilities**
+Open browser console for development commands:
 ```javascript
-// Core conversions
-export const btcToSats = (btc) => Math.floor(btc * 100_000_000);
-export const satsToBtc = (sats) => sats / 100_000_000;
-export const millisatsToSats = (millisats) => Math.floor(millisats / 1000);
+// View all stored data
+walletStorageTest.showStoredWallets()
 
-// Display formatting
-export const formatSats = (sats, includeSatsLabel = true) => 
-  includeSatsLabel ? `${sats.toLocaleString()} sats` : sats.toLocaleString();
+// Create mock transaction history
+walletStorageTest.simulateTransactionHistory()
 
-// USD conversions
-export const satsToUSD = (sats, btcPriceUSD) => satsToBtc(sats) * btcPriceUSD;
+// Reset everything
+walletStorageTest.clearAllWalletData()
+
+// Help menu
+walletStorageTest.help()
 ```
 
-### Payment Flow
+### **Demo Controls**
+- **BTC Price Slider**: Manual price adjustment (60k - 140k range)
+- **Market Crash Button**: Simulated price volatility to trigger liquidations
+- **Reset All Data**: Complete demo state reset
 
-#### Custodial Wallet (LNbits)
-1. **Funding**: Convert sats to millisats for LNbits API
-2. Create invoice via LNbits API (user pays TO wallet)
-3. Display Lightning invoice to user
-4. Poll LNbits API for payment status
-5. Update loan collateral on payment confirmation
-6. **Auto-Liquidation**: When LTV ≥ 85%, automatically send full wallet balance to `refund@lnurl.mutinynet.com`
-
-#### Self-Custodial Wallet (NWC/LNURLW)
-1. Generate mock invoice (in production: use NWC/LNURLW protocols)
-2. Display Lightning invoice to user  
-3. Simulate payment detection (in production: real protocol integration)
-4. Update loan collateral on payment confirmation
-
-### Payment Types
-
-The application supports three payment types:
-
-1. **`custodial_funding`**: User pays invoice TO their LNbits wallet (adds collateral)
-2. **`incoming`**: Self-custodial wallet receives payment (adds collateral) 
-3. **`auto_liquidation`**: Custodial wallet automatically pays out full balance when LTV ≥ 85% (removes collateral)
-
-## Configuration
-
-### LNbits Demo Wallet
+### **Configuration**
 ```javascript
+// LNbits Demo Configuration
 const LNBITS_CONFIG = {
   baseUrl: 'https://demo.lnbits.com',
   walletId: '7b62a3019da5499ab307ff2bd350680d',
@@ -160,53 +126,27 @@ const LNBITS_CONFIG = {
 };
 ```
 
-## Usage
+## 📊 Demo Mechanics Deep Dive
 
-1. **Setup Wallet**: Choose between self-custodial or custodial wallet options
-2. **Monitor LTV**: Watch real-time loan health via the LTV meter (all calculations in sats)
-3. **Add Collateral**: Use Lightning Network for instant Bitcoin top-ups
-   - Enter amount in sats (with quick buttons for common amounts)
-   - View USD equivalent in real-time
-   - Required top-up calculations show exact sats needed
-4. **Demo Controls**: Simulate market conditions with the price controls
+### **Lightning Wallet Risk Management**
+- **Risk vs Reward**: More sats = better loan health but higher liquidation risk
+- **Timing Considerations**: When to add funds vs when to allow liquidation
+- **Market Sensitivity**: Understanding price volatility impact
 
-## Testing Flow
+### **Auto-Liquidation Logic**
+1. **LTV Calculation**: Real-time monitoring of loan-to-value ratio
+2. **Threshold Detection**: Automatic triggering at 85% LTV
+3. **Payment Execution**: Immediate Lightning payment to `austin@vlt.ge`
+4. **State Updates**: Transaction recorded, collateral adjusted, LTV recalculated
 
-1. **Start Fresh**: Application loads with only initial deposit transaction
-2. **Setup Wallet**: Configure Lightning wallet (custodial or self-custodial)
-   - **Automatic Persistence**: Wallet configurations are saved to localStorage
-   - **Restoration on Reload**: Previously configured wallets are automatically restored
-3. **Market Crash**: Use demo controls to crash BTC price by 20%
-4. **Margin Call**: LTV will increase, triggering warnings and showing required top-up
-5. **Lightning Top-up**: Add sats via Lightning to restore healthy LTV ratio
+### **Persistence Benefits**
+- **Demo Continuity**: Build complex transaction histories over multiple sessions
+- **Real Experience**: Feels like actual financial app with complete state management
+- **Testing Scenarios**: Evaluate different approaches across multiple demo sessions
+- **Educational Tool**: Observe long-term effects of liquidation mechanisms
 
-### Wallet Management Features
+---
 
-- **Automatic Restoration**: Wallet connections are automatically restored when you reload the page
-- **Loading States**: Clean loading indicators while checking for existing wallet connections
-- **Open Wallet**: For custodial wallets, click "Open Wallet" to view your LNbits wallet in a new tab
-- **Wallet Deletion**: Use "Delete Wallet" to clear all wallet data and start fresh
-- **Development Testing**: Use browser console commands for testing wallet persistence:
-  ```javascript
-  // View stored wallet data
-  walletStorageTest.showStoredWallets()
-  
-  // Clear all wallet data
-  walletStorageTest.clearAllWalletData()
-  
-  // Simulate saved wallet configurations
-  walletStorageTest.simulateNWCWallet()
-  walletStorageTest.simulateLNURLWWallet()
-  
-  // Show all available commands
-  walletStorageTest.help()
-  ```
+**Ready to explore Lightning LTV management?** 🚀⚡
 
-## Development Notes
-
-- All custodial wallet operations use real LNbits API calls with proper millisats handling
-- Self-custodial operations are currently mocked for demo purposes
-- Production implementation would integrate real NWC and LNURLW protocols
-- Payment polling uses 2-second intervals for responsive UX
-- Unit conversions handle edge cases and validate input formats
-- All amounts stored and calculated in sats for precision
+Start the demo and experience advanced Bitcoin-backed loan management with Lightning Network integration!

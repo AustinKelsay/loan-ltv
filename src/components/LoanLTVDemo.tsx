@@ -3,9 +3,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Zap, AlertTriangle, TrendingDown, CheckCircle, Wallet, Settings, XCircle, ExternalLink, Trash2 } from 'lucide-react';
 import { useWalletSetup } from '../hooks/useWalletSetup';
 import { useSystemLogs } from '../hooks/useSystemLogs';
+import { useTransactionStorage } from '../hooks/useTransactionStorage';
 import WalletSetupModal from './WalletSetupModal';
 import LightningInvoiceModal from './LightningInvoiceModal';
 import SystemLogsPanel from './SystemLogsPanel';
+import Tooltip, { QuestionMarkIcon } from './Tooltip';
 import { 
   btcToSats, 
   satsToUSD, 
@@ -108,22 +110,22 @@ const mockAPI = {
 /**
  * Custom hook for simulating real-time Bitcoin price feed
  * Simulates price fluctuations for demo purposes
- * Price range: 100k - 500k for testing with smaller amounts
+ * Price range: 60k - 140k for realistic demo scenarios
  */
-const usePriceFeed = (initialPrice = 300000) => {
+const usePriceFeed = (initialPrice = 100000) => {
   const [price, setPrice] = useState(initialPrice);
   const [priceChange, setPriceChange] = useState(-0.5);
   
   useEffect(() => {
-    // Simulate price fluctuations every 5 seconds
+    // Simulate price fluctuations every 10 seconds (slower for better observation of smart liquidation updates)
     const interval = setInterval(() => {
       setPrice(prev => {
-        const change = (Math.random() - 0.5) * 20000; // Random change up to ±$10,000
-        const newPrice = Math.max(100000, Math.min(500000, prev + change)); // Keep within 100k-500k range
+        const change = (Math.random() - 0.5) * 6000; // Reduced volatility: ±$3,000 instead of ±$4,000
+        const newPrice = Math.max(20000, Math.min(140000, prev + change)); // Keep within 20k-140k range
         setPriceChange(((newPrice - prev) / prev) * 100);
         return newPrice;
       });
-    }, 5000);
+    }, 10000); // Changed from 5000ms to 10000ms
     
     return () => clearInterval(interval);
   }, []);
@@ -137,10 +139,13 @@ const usePriceFeed = (initialPrice = 300000) => {
  * All amounts are denominated in satoshis
  */
 export default function LoanLTVDemo() {
-  // Core loan state
-  const [loan, setLoan] = useState(null);
-  const [transactions, setTransactions] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Custom hooks
+  const systemLogs = useSystemLogs();
+  const walletState = useWalletSetup(systemLogs);
+  const transactionStorage = useTransactionStorage(systemLogs);
+  
+  // Destructure transaction storage for easier access
+  const { transactions, loan, isInitialized: transactionStorageReady, addTransaction, updateLoan } = transactionStorage;
   
   // Top-up state (amounts in sats)
   const [topupAmount, setTopupAmount] = useState(500000); // 0.005 BTC = 500K sats
@@ -149,41 +154,81 @@ export default function LoanLTVDemo() {
   const [showInvoice, setShowInvoice] = useState(false);
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [paymentError, setPaymentError] = useState(null); // New state for payment errors
+  const [activeTab, setActiveTab] = useState("custom"); // Tab state for UI
   
   // Wallet deletion confirmation modal state
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   
-  // Custom hooks
+  // Price feed hook
   const { price: btcPrice, priceChange, setPrice: setBtcPrice } = usePriceFeed();
-  const systemLogs = useSystemLogs();
-  const walletState = useWalletSetup(systemLogs);
   
   // Voltage wallet reserve constant (minimum sats to keep in wallet)
   const VOLTAGE_RESERVE_SATS = 7;
 
   /**
    * Calculates loan metrics based on current BTC price and loan data
+   * Lightning wallet balance is included as part of total collateral
    * Returns collateral value, LTV ratio, status, and required top-up amount
    */
   const calculateMetrics = useCallback(() => {
     if (!loan) return null;
     
-    const collateralValueUSD = satsToUSD(loan.collateral.amountSats, btcPrice);
-    const ltv = (loan.principal / collateralValueUSD) * 100;
-    const ltvStatus = ltv >= 80 ? 'critical' : ltv >= 70 ? 'warning' : 'healthy';
+    // Get Lightning wallet balance (part of total collateral)
+    const lightningWalletSats = walletState.custodialWallet ? 
+      Math.max(0, walletState.custodialWallet.balanceSats - VOLTAGE_RESERVE_SATS) : 0;
+    
+    // Total collateral = main collateral + Lightning wallet balance
+    const totalCollateralSats = loan.collateral.amountSats + lightningWalletSats;
+    const totalCollateralValueUSD = satsToUSD(totalCollateralSats, btcPrice);
+    const mainCollateralValueUSD = satsToUSD(loan.collateral.amountSats, btcPrice);
+    const lightningCollateralValueUSD = satsToUSD(lightningWalletSats, btcPrice);
+    
+    // LTV calculation based on total collateral
+    const ltv = (loan.principal / totalCollateralValueUSD) * 100;
+    
+    // Status based on liquidation thresholds
+    const lightningLiquidationThreshold = 85; // Lightning wallet liquidates
+    const loanLiquidationThreshold = 90; // Main loan liquidates (game over)
+    
+    let ltvStatus, gameStatus;
+    if (ltv >= loanLiquidationThreshold) {
+      ltvStatus = 'liquidated';
+      gameStatus = 'loan_liquidated'; // Game over
+    } else if (ltv >= lightningLiquidationThreshold) {
+      ltvStatus = 'critical';
+      gameStatus = 'lightning_zone'; // Lightning wallet at risk
+    } else if (ltv >= 70) {
+      ltvStatus = 'warning';
+      gameStatus = 'safe';
+    } else {
+      ltvStatus = 'healthy';
+      gameStatus = 'safe';
+    }
     
     // Calculate required top-up to bring LTV back to 65%
     const targetCollateralValue = loan.principal / 0.65;
-    const requiredTopupUSD = Math.max(0, targetCollateralValue - collateralValueUSD);
+    const requiredTopupUSD = Math.max(0, targetCollateralValue - totalCollateralValueUSD);
     const requiredTopupSats = requiredTopupUSD > 0 ? Math.ceil(requiredTopupUSD / btcPrice * 100_000_000) : 0;
     
     return {
-      collateralValueUSD,
+      // Total collateral metrics
+      totalCollateralSats,
+      totalCollateralValueUSD,
+      mainCollateralValueUSD,
+      lightningCollateralValueUSD,
+      lightningWalletSats,
+      
+      // LTV and status
       ltv,
       ltvStatus,
+      gameStatus,
+      lightningLiquidationThreshold,
+      loanLiquidationThreshold,
+      
+      // Top-up calculations
       requiredTopupSats
     };
-  }, [loan, btcPrice]);
+  }, [loan, btcPrice, walletState.custodialWallet, VOLTAGE_RESERVE_SATS]);
   
   const metrics = calculateMetrics();
 
@@ -202,27 +247,29 @@ export default function LoanLTVDemo() {
       
       // Only auto-liquidate if:
       // 1. We have a custodial wallet setup
-      // 2. LTV is at or above liquidation threshold (85%)
+      // 2. LTV is at or above Lightning liquidation threshold (85%)
       // 3. Wallet has available balance to liquidate (minus reserve)
       // 4. Not already processing a payment
+      // 5. Main loan hasn't been liquidated yet
       if (
         walletState.walletSetup &&
         walletState.walletConfig.type === 'custodial' &&
         walletState.custodialWallet &&
         availableBalance > 0 &&
-        metrics?.ltv >= loan?.liquidationThreshold &&
+        metrics?.ltv >= metrics?.lightningLiquidationThreshold &&
+        metrics?.gameStatus !== 'loan_liquidated' &&
         !processingPayment &&
         !showInvoice
       ) {
-        systemLogs.logLiquidation(`🚨 AUTO-LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${loan.liquidationThreshold}%`);
-        systemLogs.logPayment(`💸 Sending ${formatSats(availableBalance)} to refund@lnurl.mutinynet.com (keeping ${VOLTAGE_RESERVE_SATS} sats reserve)`);
+        systemLogs.logLiquidation(`🚨 LIGHTNING AUTO-LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.lightningLiquidationThreshold}%`);
+        systemLogs.logPayment(`💸 Sending ${formatSats(availableBalance)} to austin@vlt.ge (keeping ${VOLTAGE_RESERVE_SATS} sats reserve)`);
         
         setProcessingPayment(true);
         setShowInvoice(true);
         
         try {
           const liquidationAmount = availableBalance;
-          const targetLightningAddress = 'refund@lnurl.mutinynet.com';
+          const targetLightningAddress = 'snstrtest@vlt.ge';
           const paymentComment = `🚨 AUTO-LIQUIDATION: Loan ID ${loan.loanId} - LTV ${metrics.ltv.toFixed(1)}%`;
           
           const liquidationPayment = await walletState.voltageAPI.sendPaymentToLightningAddress(
@@ -230,6 +277,9 @@ export default function LoanLTVDemo() {
             liquidationAmount,
             paymentComment
           );
+          
+          systemLogs.logDebug(`🐛 Liquidation payment created:`, liquidationPayment);
+          systemLogs.logDebug(`🐛 Payment hash: ${liquidationPayment.payment_hash}`);
           
           const liquidationDetails = {
             paymentType: 'auto_liquidation',
@@ -254,21 +304,57 @@ export default function LoanLTVDemo() {
           setCurrentInvoice({ 
             paymentType: 'auto_liquidation_error', 
             amountSats: availableBalance,
-            targetAddress: 'plebpoet@vlt.ge'
+            targetAddress: 'snstrtest@vlt.ge'
           });
         }
       } else {
-        systemLogs.logDebug('🚨 Auto-liquidation conditions not met');
+        systemLogs.logDebug('🚨 Lightning auto-liquidation conditions not met');
+      }
+
+      // Check for main loan liquidation (90% LTV - game over)
+      if (
+        metrics?.ltv >= metrics?.loanLiquidationThreshold &&
+        metrics?.gameStatus !== 'loan_liquidated' &&
+        !processingPayment &&
+        !showInvoice
+      ) {
+        systemLogs.logLiquidation(`💀 LOAN LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.loanLiquidationThreshold}%`);
+        
+        // Mark loan as liquidated in transaction history
+        const liquidationTx = {
+          id: `tx-${Date.now()}`,
+          type: "loan_liquidation",
+          amountSats: -loan.collateral.amountSats, // Negative to show collateral removed
+          currency: "BTC",
+          timestamp: new Date().toISOString(),
+          status: "completed",
+          ltvAtLiquidation: metrics.ltv,
+          gameOver: true
+        };
+        
+        addTransaction(liquidationTx);
+        
+        // Zero out the loan collateral (loan is liquidated)
+        updateLoan(prev => ({
+          ...prev,
+          collateral: {
+            ...prev.collateral,
+            amountSats: 0
+          },
+          status: 'liquidated'
+        }));
+        
+        systemLogs.logError('💀 GAME OVER: Main loan has been liquidated!');
       }
     };
 
     // Check for auto-liquidation whenever metrics change
     if (metrics && loan && walletState.walletSetup) {
-      // Add a small delay to prevent rapid-fire liquidations during price updates
-      const timeoutId = setTimeout(checkForAutoLiquidation, 5000);
+      // Small delay for demo purposes - responsive but not spammy
+      const timeoutId = setTimeout(checkForAutoLiquidation, 3000);
       return () => clearTimeout(timeoutId);
     }
-  }, [metrics, loan, walletState.walletSetup, walletState.walletConfig, walletState.custodialWallet, processingPayment, showInvoice, systemLogs]);
+  }, [metrics, loan, walletState.walletSetup, walletState.walletConfig, walletState.custodialWallet, processingPayment, showInvoice]);
 
   /**
    * Updates custodial wallet balance after successful operations
@@ -287,30 +373,13 @@ export default function LoanLTVDemo() {
   };
   
   /**
-   * Loads initial loan data and transaction history
+   * Loads test utility on client side only
    */
   useEffect(() => {
     // Load test utility on client side only
     if (typeof window !== 'undefined') {
       import('../utils/testWalletStorage').catch(console.error);
     }
-    
-    const loadData = async () => {
-      try {
-        const [loanData, txHistory] = await Promise.all([
-          mockAPI.getLoanDetails(),
-          mockAPI.getTransactionHistory()
-        ]);
-        setLoan(loanData);
-        setTransactions(txHistory);
-      } catch (error) {
-        console.error('Failed to load data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
-    loadData();
   }, []);
 
   /**
@@ -425,14 +494,56 @@ export default function LoanLTVDemo() {
         }
         
         pollAttempts++;
+        
+        // For auto-liquidation payments, dynamically update the amount based on current conditions
+        if (paymentDetails.paymentType === 'auto_liquidation') {
+          try {
+            // Get current wallet balance
+            const currentWallet = await walletState.voltageAPI.getWalletDetails();
+            const currentAvailableBalance = Math.max(0, currentWallet.balanceSats - VOLTAGE_RESERVE_SATS);
+            
+            // Check if we still need to liquidate based on current LTV
+            const currentMetrics = calculateLoanMetrics(loan, btcPrice, currentWallet.balanceSats);
+            
+            if (currentMetrics.ltv < currentMetrics.lightningLiquidationThreshold) {
+              systemLogs.logInfo(`📈 Price recovery detected! LTV now ${currentMetrics.ltv.toFixed(1)}% < ${currentMetrics.lightningLiquidationThreshold}% - cancelling auto-liquidation`);
+              setPaymentError('Auto-liquidation cancelled: LTV recovered below liquidation threshold');
+              setProcessingPayment(false);
+              return;
+            }
+            
+            // Update the payment details with current amount if it changed significantly
+            const originalAmount = paymentDetails.amountSats;
+            if (Math.abs(currentAvailableBalance - originalAmount) > originalAmount * 0.05) { // 5% threshold
+              systemLogs.logInfo(`💰 Liquidation amount updated: ${formatSats(originalAmount)} → ${formatSats(currentAvailableBalance)} (price change impact)`);
+              paymentDetails.amountSats = currentAvailableBalance;
+              
+              // Update the modal display
+              setCurrentInvoice(prev => ({
+                ...prev,
+                amountSats: currentAvailableBalance,
+                updatedAmount: true,
+                originalAmount: originalAmount
+              }));
+            }
+          } catch (error) {
+            systemLogs.logWarning('Could not update liquidation amount during polling', error.message);
+          }
+        }
+        
         const paymentStatus = await walletState.voltageAPI.checkPayment(paymentHash);
         
         // Log more detailed status information
-        systemLogs.logDebug(`🐛Payment ${paymentHash.substring(0, 8)}... status: ${paymentStatus.status}`);
+        systemLogs.logDebug(`🐛Payment ${paymentHash.substring(0, 8)}... status: ${paymentStatus.status}, direction: ${paymentStatus.direction}`);
         systemLogs.logDebug(`🐛Poll attempt ${pollAttempts}/${maxAttempts}: Payment status = ${paymentStatus.status}, paid = ${paymentStatus.paid}`);
         
-        if (paymentStatus.paid) {
-          systemLogs.logSuccess(`✅ Payment confirmed! Hash: ${paymentHash.substring(0, 8)}...`);
+        // For auto-liquidations (sending payments), check for completed status
+        const isPaymentComplete = paymentStatus.paid || 
+          (paymentStatus.status === 'completed') || 
+          (paymentStatus.status === 'succeeded');
+        
+        if (isPaymentComplete) {
+          systemLogs.logSuccess(`✅ Payment confirmed! Hash: ${paymentHash.substring(0, 8)}... Status: ${paymentStatus.status}`);
           handleSuccessfulPayment(paymentDetails); 
           setPaymentError(null); // Clear error on success
           return;
@@ -514,7 +625,7 @@ export default function LoanLTVDemo() {
       systemLogs.logLiquidation(`🚨 Auto-liquidation completed: ${formatSats(paidAmountSats)} sent to ${paymentConfirmation.targetAddress}`);
       
       // For auto-liquidation, the payment goes OUT of the collateral, not into it
-      setLoan(prev => ({
+      updateLoan(prev => ({
         ...prev,
         collateral: {
           ...prev.collateral,
@@ -535,7 +646,9 @@ export default function LoanLTVDemo() {
         ltvAtLiquidation: paymentConfirmation.ltvAtLiquidation
       };
       
-      setTransactions(prev => [liquidationTx, ...prev]);
+      systemLogs.logDebug(`🐛 Adding liquidation transaction: ${JSON.stringify(liquidationTx)}`);
+      addTransaction(liquidationTx);
+      systemLogs.logSuccess(`✅ Liquidation transaction added to history`);
       
       // Update custodial wallet balance after liquidation
       updateCustodialWalletBalance();
@@ -544,7 +657,7 @@ export default function LoanLTVDemo() {
       systemLogs.logSuccess(`✅ Top-up completed: ${formatSats(paidAmountSats)} added to collateral`);
       
       // For regular top-ups (custodial_funding or incoming), add to collateral
-      setLoan(prev => ({
+      updateLoan(prev => ({
         ...prev,
         collateral: {
           ...prev.collateral,
@@ -566,7 +679,7 @@ export default function LoanLTVDemo() {
         })
       };
       
-      setTransactions(prev => [newTx, ...prev]);
+      addTransaction(newTx);
       
       // Update custodial wallet balance after funding
       if (paymentConfirmation.paymentType === 'custodial_funding') {
@@ -576,6 +689,13 @@ export default function LoanLTVDemo() {
 
     setProcessingPayment(false);
     setPaymentError(null);
+    
+    // Auto-close modal after successful payment (with a brief delay to show success state)
+    setTimeout(() => {
+      setShowInvoice(false);
+      setCurrentInvoice(null);
+      systemLogs.logInfo('✅ Payment modal auto-closed after successful completion');
+    }, 2000); // 2 second delay to show success state
   };
 
   /**
@@ -604,12 +724,20 @@ export default function LoanLTVDemo() {
   };
   
   /**
-   * Demo function to simulate a market crash (20% price drop)
+   * Demo function to simulate a market crash 
+   * Calibrated to trigger Lightning liquidation (85%) and potentially loan liquidation (90%)
    */
   const simulateCrash = () => {
-    const newPrice = btcPrice * 0.8;
-    systemLogs.logWarning(`📉 Market crash simulated: BTC price dropped from $${btcPrice.toLocaleString()} to $${Math.round(newPrice).toLocaleString()} (-20%)`);
-    setBtcPrice(newPrice);
+    // Calculate crash needed to hit exactly 87% LTV (between 85% and 90%)
+    const targetLTV = 87; // Right in the danger zone
+    const targetCollateralValue = loan.principal / (targetLTV / 100);
+    const targetPrice = targetCollateralValue / (metrics?.totalCollateralSats / 100_000_000);
+    const crashPrice = Math.max(20000, targetPrice); // Don't go below minimum
+    
+    const crashPercent = ((btcPrice - crashPrice) / btcPrice * 100);
+    systemLogs.logWarning(`📉 Market crash simulated: BTC price dropped from $${btcPrice.toLocaleString()} to $${Math.round(crashPrice).toLocaleString()} (-${crashPercent.toFixed(1)}%)`);
+    systemLogs.logWarning(`📊 Demo Mode: This should trigger Lightning liquidation (85%) - monitor for potential loan liquidation (90%)`);
+    setBtcPrice(crashPrice);
   };
 
   /**
@@ -625,8 +753,9 @@ export default function LoanLTVDemo() {
   const confirmDeleteWallet = () => {
     systemLogs.logWarning('🗑️ Deleting wallet and clearing all data...');
     walletState.resetWalletSetup();
+    transactionStorage.clearAllData(); // Also clear transaction history
     setShowDeleteConfirmation(false);
-    systemLogs.logSuccess('✅ Wallet deleted successfully');
+    systemLogs.logSuccess('✅ Wallet deleted and all demo data reset to defaults');
   };
 
   /**
@@ -651,23 +780,18 @@ export default function LoanLTVDemo() {
     }
   };
   
-  // Show loading state while data is being fetched
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        <div className="text-xl">Loading loan details...</div>
-      </div>
-    );
-  }
-
-  // Show loading state while checking for existing wallet connections
-  if (!walletState.initialLoadComplete) {
+  // Show loading state while initializing
+  if (!transactionStorageReady || !walletState.initialLoadComplete) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-orange-500 border-t-transparent mx-auto mb-4"></div>
-          <div className="text-xl">Checking for existing wallet connections...</div>
-          <div className="text-gray-400 text-sm mt-2">Please wait while we restore your wallet state</div>
+                      <div className="text-xl">Loading Loan Lightning Topup Visualizer...</div>
+            <div className="text-gray-400 text-sm mt-2 space-y-1">
+              <div>Restoring wallet connections...</div>
+              <div>Loading transaction history...</div>
+              <div>Initializing demo state...</div>
+            </div>
         </div>
       </div>
     );
@@ -680,7 +804,8 @@ export default function LoanLTVDemo() {
         <div className="max-w-7xl mx-auto px-4 py-5">
           <div className="flex justify-between items-center">
             <div className="text-2xl font-bold bg-gradient-to-r from-orange-400 to-yellow-500 bg-clip-text text-transparent">
-              ⚡ Lightning LTV
+              <span className="hidden sm:inline">⚡ Loan Lightning Topup Visualizer</span>
+              <span className="sm:hidden">⚡ Loan LTV</span>
             </div>
             <div className="flex gap-6 text-sm">
               <div className="flex items-center gap-2">
@@ -696,16 +821,47 @@ export default function LoanLTVDemo() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Critical LTV warning alert */}
-        {metrics?.ltvStatus === 'critical' && (
-          <div className="mb-6 bg-red-900/20 border border-red-600 rounded-lg p-4">
+        {/* Loan Liquidation Alert */}
+        {metrics?.gameStatus === 'loan_liquidated' && (
+          <div className="mb-6 bg-black border-2 border-red-600 rounded-lg p-6 text-center">
+            <div className="text-6xl mb-4">💀</div>
+            <h3 className="text-2xl font-bold text-red-500 mb-2">LOAN LIQUIDATED</h3>
+            <p className="text-red-300 mb-4">
+              Your main loan has been liquidated at <strong>{metrics.ltv.toFixed(1)}% LTV</strong>
+            </p>
+            <p className="text-gray-400 text-sm">
+              Use "Reset All Data" to start fresh. Try to trigger Lightning wallet liquidation (85%) without hitting loan liquidation (90%)!
+            </p>
+          </div>
+        )}
+
+        {/* Lightning Zone Alert */}
+        {metrics?.gameStatus === 'lightning_zone' && metrics?.gameStatus !== 'loan_liquidated' && (
+          <div className="mb-6 bg-orange-900/20 border border-orange-500 rounded-lg p-4">
             <div className="flex items-start gap-3">
-              <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="text-orange-500 text-2xl">⚡</div>
               <div>
-                <h3 className="text-lg font-semibold text-red-500">Margin Call Warning</h3>
-                <p className="text-red-300 mt-1">
-                  Your loan is approaching liquidation. Add Bitcoin collateral immediately to avoid liquidation of your assets.
-                  Required top-up: <strong>{formatSats(metrics.requiredTopupSats)}</strong>
+                <h3 className="text-lg font-semibold text-orange-500">Lightning Liquidation Zone!</h3>
+                <p className="text-orange-300 mt-1">
+                  LTV is at <strong>{metrics.ltv.toFixed(1)}%</strong> - Your Lightning wallet is at risk of auto-liquidation at 85%.
+                  <br />
+                  <span className="text-yellow-300">📊 Demo Challenge: Can you trigger Lightning liquidation without hitting loan liquidation (90%)?</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Critical LTV warning alert */}
+        {metrics?.ltvStatus === 'warning' && metrics?.gameStatus === 'safe' && (
+          <div className="mb-6 bg-yellow-900/20 border border-yellow-600 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-6 h-6 text-yellow-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-lg font-semibold text-yellow-500">Approaching Danger Zone</h3>
+                <p className="text-yellow-300 mt-1">
+                  Your LTV is getting higher. Add collateral or be ready for the Lightning liquidation scenario!
+                  Required top-up to be safe: <strong>{formatSats(metrics.requiredTopupSats)}</strong>
                 </p>
               </div>
             </div>
@@ -721,55 +877,117 @@ export default function LoanLTVDemo() {
             <div className="text-gray-500">{loan.currency}</div>
           </div>
           
-          {/* Collateral Value Card */}
+          {/* Total Collateral Value Card */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <div className="text-sm text-gray-400 uppercase tracking-wider mb-2">Bitcoin Collateral Value</div>
-            <div className="text-3xl font-bold">${metrics?.collateralValueUSD.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
-            <div className="text-gray-500">{formatSats(loan.collateral.amountSats)}</div>
+            <div className="flex items-center gap-2 text-sm text-gray-400 uppercase tracking-wider mb-2">
+              Total Collateral Value
+              <Tooltip content="Total collateral includes main loan collateral + Lightning wallet balance. Both contribute to LTV calculation.">
+                <QuestionMarkIcon />
+              </Tooltip>
+            </div>
+            <div className="text-3xl font-bold">${metrics?.totalCollateralValueUSD.toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+            <div className="text-gray-500 space-y-1">
+              <div className="flex justify-between">
+                <span>Main:</span>
+                <span>{formatSats(loan.collateral.amountSats)}</span>
+              </div>
+              {metrics?.lightningWalletSats > 0 && (
+                <div className="flex justify-between text-orange-400">
+                  <span>⚡ Wallet:</span>
+                  <span>{formatSats(metrics.lightningWalletSats)}</span>
+                </div>
+              )}
+            </div>
           </div>
           
-          {/* LTV Ratio Card with visual meter */}
+          {/* LTV Ratio Card with game mechanics */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-            <div className="text-sm text-gray-400 uppercase tracking-wider mb-2">Current LTV</div>
+            <div className="flex items-center gap-2 text-sm text-gray-400 uppercase tracking-wider mb-2">
+              Current LTV
+              <Tooltip content="Demo Challenge: Test market volatility to trigger Lightning wallet liquidation (85% LTV) without triggering main loan liquidation (90% LTV). This demonstrates sophisticated risk management with dual liquidation thresholds.">
+                <QuestionMarkIcon />
+              </Tooltip>
+            </div>
             <div className="text-3xl font-bold">{metrics?.ltv.toFixed(1)}%</div>
-            <div className="text-gray-500">Liquidation at {loan.liquidationThreshold}%</div>
             
-            {/* LTV Visual Meter */}
+            {/* Game status indicator */}
+            <div className="text-gray-500 space-y-1">
+              {metrics?.gameStatus === 'loan_liquidated' ? (
+                <div className="text-red-400 font-semibold">💀 LOAN LIQUIDATED</div>
+              ) : (
+                <>
+                  <div className="flex justify-between">
+                    <span>⚡ Lightning:</span>
+                    <span className={metrics?.ltv >= 85 ? 'text-red-400' : 'text-gray-400'}>{metrics?.lightningLiquidationThreshold}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>💀 Loan:</span>
+                    <span className={metrics?.ltv >= 90 ? 'text-red-400' : 'text-gray-400'}>{metrics?.loanLiquidationThreshold}%</span>
+                  </div>
+                </>
+              )}
+            </div>
+            
+            {/* LTV Visual Meter with dual thresholds */}
             <div className="mt-4">
-              <div className="h-2 bg-gray-700 rounded-full overflow-hidden relative">
+              <div className="h-3 bg-gray-700 rounded-full overflow-hidden relative">
                 <div 
                   className="h-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 transition-all duration-500"
-                  style={{ width: `${metrics?.ltv}%` }}
+                  style={{ width: `${Math.min(metrics?.ltv || 0, 100)}%` }}
                 />
-                {/* Liquidation threshold indicator */}
-                <div className="absolute right-0 top-0 w-[15%] h-full bg-red-600/30 border-l-2 border-red-600" />
+                {/* Lightning liquidation threshold (85%) */}
+                <div className="absolute top-0 h-full border-l-2 border-orange-400" style={{ left: '85%' }}>
+                  <div className="absolute -top-1 -left-1 w-2 h-2 bg-orange-400 rounded-full"></div>
+                </div>
+                {/* Loan liquidation threshold (90%) */}
+                <div className="absolute top-0 h-full border-l-2 border-red-600" style={{ left: '90%' }}>
+                  <div className="absolute -top-1 -left-1 w-2 h-2 bg-red-600 rounded-full"></div>
+                </div>
               </div>
               <div className="flex justify-between mt-2 text-xs text-gray-500">
                 <span>0%</span>
                 <span>Safe</span>
-                <span>Warning</span>
-                <span>85%</span>
+                <span className="text-orange-400">⚡85%</span>
+                <span className="text-red-400">💀90%</span>
               </div>
             </div>
           </div>
         </div>
 
         {/* Lightning Top-up Panel */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-semibold">Lightning Network Top-Up</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8 text-white">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <div className="text-[#f7931a]">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path
+                    d="M12 3L4 9V21H20V9L12 3Z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+              <h2 className="text-lg font-medium">Lightning Network Top-Up</h2>
+              <Tooltip content="DEMO MECHANICS: Lightning wallet funds are included in your total collateral and affect LTV calculation. When LTV hits 85%, your Lightning wallet auto-liquidates. When LTV hits 90%, your main loan liquidates. Demo Challenge: Can you trigger Lightning liquidation without loan liquidation?">
+                <QuestionMarkIcon />
+              </Tooltip>
+            </div>
             <div className="flex items-center gap-3">
               {/* Wallet status indicator */}
-              {walletState.walletSetup && (
+              {walletState.walletSetup ? (
                 <div className="flex items-center gap-2 text-sm text-green-400">
                   <CheckCircle className="w-4 h-4" />
                   <span>
                     {walletState.walletConfig.type === 'custodial' 
-                      ? `Custodial Wallet (${formatSats(walletState.custodialWallet?.balanceSats || 0)} balance)` 
+                      ? `Custodial (${formatSats(walletState.custodialWallet?.balanceSats || 0)})` 
                       : `Self-Custodial (${walletState.walletConfig.method.toUpperCase()})`
                     }
                   </span>
                 </div>
+              ) : (
+                <div className="px-3 py-1 bg-[#3a2a1a] text-[#f7931a] rounded-full text-sm">Setup Required</div>
               )}
               {/* LTV status badge */}
               <span className={`px-3 py-1 rounded-full text-sm font-medium ${
@@ -781,91 +999,138 @@ export default function LoanLTVDemo() {
               </span>
             </div>
           </div>
-          
+
           {/* Setup required notice */}
           {!walletState.walletSetup && (
-            <div className="bg-gray-800/50 rounded-lg p-4 mb-4 border border-gray-700">
-              <div className="flex items-center gap-2 text-orange-400 mb-2">
-                <Wallet className="w-5 h-5" />
-                <span className="font-medium">Setup Required</span>
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 mb-6 flex items-start gap-3">
+              <div className="text-[#f7931a] mt-0.5">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="3" y="6" width="18" height="15" rx="2" stroke="currentColor" strokeWidth="2" />
+                  <path
+                    d="M16 10C16 8.89543 15.1046 8 14 8H10C8.89543 8 8 8.89543 8 10V10C8 11.1046 8.89543 12 10 12H14C15.1046 12 16 11.1046 16 10V10Z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  />
+                  <path d="M8 3V6M16 3V6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
               </div>
-              <p className="text-gray-400 text-sm">
-                Configure your Lightning wallet to enable instant top-ups for your loan collateral.
-              </p>
+              <div>
+                <p className="text-sm text-gray-200">
+                  Configure your Lightning wallet to enable instant top-ups for your loan collateral.
+                </p>
+                <p className="text-sm text-gray-400 mt-1">
+                  Protect your position from liquidation with fast, low-fee transactions.
+                </p>
+              </div>
             </div>
           )}
-          
-          {/* Top-up controls */}
-          <div className="flex gap-4 items-end">
-            <div className="flex-1">
-              <label className="block text-sm text-gray-400 mb-2">Top-up Amount</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  value={topupInput}
-                  onChange={(e) => handleTopupInputChange(e.target.value)}
-                  step="1000"
-                  min="1"
-                  className="w-full px-4 py-3 pr-16 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-orange-500 transition-colors"
-                  placeholder="Enter amount in sats"
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">sats</span>
+
+          {/* Tab interface */}
+          <div className="mb-6">
+            <div className="grid grid-cols-2 bg-gray-800 rounded-md overflow-hidden mb-4">
+                              <button
+                  className={`py-2 text-center text-sm transition-colors ${
+                    activeTab === "custom" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-300"
+                  }`}
+                  onClick={() => setActiveTab("custom")}
+                >
+                  Custom Amount
+                </button>
+                <button
+                  className={`py-2 text-center text-sm transition-colors ${
+                    activeTab === "presets" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-300"
+                  }`}
+                  onClick={() => setActiveTab("presets")}
+                >
+                  Quick Presets
+                </button>
+            </div>
+
+            {activeTab === "custom" && (
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <label htmlFor="topup-amount" className="text-sm text-gray-300">
+                    Top-up Amount
+                  </label>
+                  {isValidSatsAmount(topupAmount) && (
+                    <span className="text-sm text-gray-400">≈ ${satsToUSD(topupAmount, btcPrice).toFixed(2)} USD</span>
+                  )}
+                </div>
+                <div className="flex">
+                  <input
+                    id="topup-amount"
+                    type="text"
+                    inputMode="numeric"
+                    value={topupInput}
+                    onChange={(e) => handleTopupInputChange(e.target.value)}
+                    className="flex-1 bg-black border border-gray-700 text-white rounded-l-md px-4 py-3 focus:outline-none focus:border-orange-500 transition-colors"
+                    placeholder="Enter amount"
+                  />
+                  <div className="bg-gray-800 border border-l-0 border-gray-700 px-4 flex items-center rounded-r-md text-gray-300 text-sm">
+                    sats
+                  </div>
+                </div>
               </div>
-              {/* Quick amount buttons */}
-              <div className="flex gap-2 mt-2">
-                <button
-                  onClick={() => handleTopupInputChange('100000')}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
-                >
-                  100K sats
-                </button>
-                <button
-                  onClick={() => handleTopupInputChange('500000')}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
-                >
-                  500K sats
-                </button>
-                <button
-                  onClick={() => handleTopupInputChange('1000000')}
-                  className="px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded cursor-pointer"
-                >
-                  1M sats
-                </button>
+            )}
+
+            {activeTab === "presets" && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: "100K sats", value: "100000", usd: satsToUSD(100000, btcPrice).toFixed(2) },
+                    { label: "500K sats", value: "500000", usd: satsToUSD(500000, btcPrice).toFixed(2) },
+                    { label: "1M sats", value: "1000000", usd: satsToUSD(1000000, btcPrice).toFixed(2) },
+                  ].map((preset) => (
+                    <button
+                      key={preset.value}
+                      className={`bg-gray-800 border ${
+                        topupInput === preset.value ? "border-orange-500" : "border-gray-700"
+                      } rounded-md py-2 px-3 text-center hover:bg-gray-700 transition-colors cursor-pointer`}
+                      onClick={() => handleTopupInputChange(preset.value)}
+                    >
+                      <div className="text-sm">{preset.label}</div>
+                      <div className="text-xs text-gray-400">${preset.usd}</div>
+                    </button>
+                  ))}
+                </div>
                 {metrics?.requiredTopupSats > 0 && (
                   <button
                     onClick={() => handleTopupInputChange(metrics.requiredTopupSats.toString())}
-                    className="px-3 py-1 text-xs bg-red-600 hover:bg-red-500 rounded cursor-pointer"
+                    className={`w-full bg-gray-800 border ${
+                      topupInput === metrics.requiredTopupSats.toString() ? "border-red-500" : "border-red-600"
+                    } rounded-md py-2 px-3 text-center hover:bg-red-900/20 transition-colors cursor-pointer`}
                   >
-                    Required: {formatSats(metrics.requiredTopupSats, false)}
+                    <div className="text-sm text-red-400">Required: {formatSats(metrics.requiredTopupSats, false)}</div>
+                    <div className="text-xs text-red-500">${satsToUSD(metrics.requiredTopupSats, btcPrice).toFixed(2)}</div>
                   </button>
                 )}
               </div>
-              {/* USD equivalent */}
-              {isValidSatsAmount(topupAmount) && (
-                <div className="text-xs text-gray-400 mt-1">
-                  ≈ ${satsToUSD(topupAmount, btcPrice).toFixed(2)} USD
-                </div>
-              )}
-            </div>
-            
-            {/* Main top-up button */}
+            )}
+          </div>
+
+          {/* Action buttons */}
+          <div className="space-y-3">
             <button
               onClick={initiateTopUp}
               disabled={processingPayment || !isValidSatsAmount(topupAmount) || topupAmount <= 0}
-              className="px-6 py-3 bg-gradient-to-r from-orange-500 to-yellow-500 text-black font-semibold rounded-lg hover:shadow-lg hover:shadow-orange-500/25 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer"
+              className="w-full bg-gradient-to-r from-orange-500 to-yellow-500 hover:from-orange-600 hover:to-yellow-600 text-black font-medium h-12 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Zap className="w-5 h-5" />
-              {walletState.walletSetup ? 'Top-up via Lightning' : 'Setup Wallet & Top-up'}
+              <div className="mr-2">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2" fill="currentColor"/>
+                </svg>
+              </div>
+              {walletState.walletSetup ? 'Top-up via Lightning' : 'Setup Lightning Wallet'}
             </button>
-            
+
             {/* Wallet management buttons (only shown when wallet is set up) */}
             {walletState.walletSetup && (
-              <>
+              <div className="flex gap-3">
                 {/* Open Wallet button (for custodial wallets only) */}
                 {walletState.walletConfig?.type === 'custodial' && (
                   <button
                     onClick={openVoltageWallet}
-                    className="px-4 py-3 bg-blue-600 border border-blue-500 rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 cursor-pointer"
+                    className="flex-1 px-4 py-2 bg-blue-600 border border-blue-500 rounded-lg hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <ExternalLink className="w-4 h-4" />
                     Open Wallet
@@ -875,14 +1140,18 @@ export default function LoanLTVDemo() {
                 {/* Delete Wallet button */}
                 <button
                   onClick={handleDeleteWallet}
-                  className="px-4 py-3 bg-red-600 border border-red-500 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2 cursor-pointer"
+                  className="flex-1 px-4 py-2 bg-red-600 border border-red-500 rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                   {walletState.walletConfig?.type === 'custodial' ? 'Delete Wallet' : 'Change Wallet'}
                 </button>
-              </>
+              </div>
             )}
           </div>
+
+          <p className="text-xs text-center text-gray-500 mt-3">
+            This is optional. You can still manage your loan without Lightning top-ups.
+          </p>
         </div>
 
         {/* Transaction History */}
@@ -890,44 +1159,55 @@ export default function LoanLTVDemo() {
           <h3 className="text-xl font-semibold mb-6">Recent Transactions</h3>
           
           <div className="space-y-4">
-            {transactions.map((tx) => (
-              <div key={tx.id} className="flex justify-between items-center py-4 border-b border-gray-800 last:border-0">
-                <div className="flex items-center gap-3">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center text-center ${
-                    tx.type === 'auto_liquidation' ? 'bg-red-500/20 text-red-400' :
-                    tx.type === 'lightning_topup' ? 'bg-orange-500/20 text-orange-400' : 
-                    'bg-blue-500/20 text-blue-400'
-                  }`}>
-                    {tx.type === 'auto_liquidation' ? '🚨' : 
-                     tx.type === 'lightning_topup' ? <Zap className="w-5 h-5" /> : '📥'}
-                  </div>
-                  <div>
-                    <h4 className="font-medium">
-                      {tx.type === 'auto_liquidation' ? `🚨 Auto-Liquidation (LTV ${tx.ltvAtLiquidation?.toFixed(1)}%)` :
-                       tx.type === 'lightning_topup' ? 'Lightning Top-up' : 
-                       'Initial Bitcoin Deposit'}
-                    </h4>
-                    <p className="text-sm text-gray-400">
-                      {new Date(tx.timestamp).toLocaleString()}
-                      {tx.targetAddress && (
-                        <span className="ml-2">→ {tx.targetAddress}</span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="text-right">
-                  <div className={`font-semibold ${
-                    tx.amountSats < 0 ? 'text-red-400' : 'text-green-400'
-                  }`}>
-                    {tx.amountSats < 0 ? '' : '+'}{formatSats(Math.abs(tx.amountSats))}
-                  </div>
-                  <div className="text-sm text-gray-400">
-                    ${satsToUSD(Math.abs(tx.amountSats), btcPrice).toLocaleString()}
-                  </div>
-                </div>
+            {transactions.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <div className="text-4xl mb-3">📝</div>
+                <p>No transactions yet</p>
+                <p className="text-sm mt-1">Add Lightning funds or trigger liquidations to see transaction history</p>
               </div>
-            ))}
+            ) : (
+              transactions.map((tx) => (
+                <div key={tx.id} className="flex justify-between items-center py-4 border-b border-gray-800 last:border-0">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-center ${
+                      tx.type === 'loan_liquidation' ? 'bg-black border-2 border-red-600 text-red-400' :
+                      tx.type === 'auto_liquidation' ? 'bg-red-500/20 text-red-400' :
+                      tx.type === 'lightning_topup' ? 'bg-orange-500/20 text-orange-400' : 
+                      'bg-blue-500/20 text-blue-400'
+                    }`}>
+                      {tx.type === 'loan_liquidation' ? '💀' :
+                       tx.type === 'auto_liquidation' ? '🚨' : 
+                       tx.type === 'lightning_topup' ? <Zap className="w-5 h-5" /> : '📥'}
+                    </div>
+                    <div>
+                      <h4 className="font-medium">
+                        {tx.type === 'loan_liquidation' ? `💀 LOAN LIQUIDATED (LTV ${tx.ltvAtLiquidation?.toFixed(1)}%)` :
+                         tx.type === 'auto_liquidation' ? `🚨 Lightning Auto-Liquidation (LTV ${tx.ltvAtLiquidation?.toFixed(1)}%)` :
+                         tx.type === 'lightning_topup' ? 'Lightning Top-up' : 
+                         'Initial Bitcoin Deposit'}
+                      </h4>
+                      <p className="text-sm text-gray-400">
+                        {new Date(tx.timestamp).toLocaleString()}
+                        {tx.targetAddress && (
+                          <span className="ml-2">→ {tx.targetAddress}</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="text-right">
+                    <div className={`font-semibold ${
+                      tx.amountSats < 0 ? 'text-red-400' : 'text-green-400'
+                    }`}>
+                      {tx.amountSats < 0 ? '' : '+'}{formatSats(Math.abs(tx.amountSats))}
+                    </div>
+                    <div className="text-sm text-gray-400">
+                      ${satsToUSD(Math.abs(tx.amountSats), btcPrice).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -960,7 +1240,7 @@ export default function LoanLTVDemo() {
               <div>
                 <h3 className="text-lg font-semibold text-white">Delete Wallet</h3>
                 <p className="text-sm text-gray-400">
-                  {walletState.walletConfig?.type === 'custodial' ? 'LNbits Custodial Wallet' : 'Self-Custodial Wallet'}
+                  {walletState.walletConfig?.type === 'custodial' ? 'Voltage Custodial Wallet' : 'Self-Custodial Wallet'}
                 </p>
               </div>
             </div>
@@ -1007,8 +1287,8 @@ export default function LoanLTVDemo() {
             <label className="text-xs text-gray-400 block mb-1">BTC Price</label>
             <input
               type="range"
-              min="30000"
-              max="60000"
+              min="20000"
+              max="140000"
               value={btcPrice}
               onChange={(e) => setBtcPrice(parseInt(e.target.value))}
               className="w-48"
@@ -1022,7 +1302,21 @@ export default function LoanLTVDemo() {
             className="flex items-center gap-2 px-4 py-2 bg-red-600 rounded-lg hover:bg-red-700 transition-colors cursor-pointer"
           >
             <TrendingDown className="w-4 h-4" />
-            Crash -20%
+📉 Market Crash
+          </button>
+          
+          <button
+            onClick={() => {
+              if (confirm('⚠️ This will reset ALL data (wallet, transactions, loan state) to defaults. Continue?')) {
+                walletState.resetWalletSetup();
+                transactionStorage.clearAllData();
+                systemLogs.logWarning('🗑️ All demo data reset to defaults');
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-600 rounded-lg hover:bg-gray-700 transition-colors cursor-pointer text-sm"
+          >
+            <Trash2 className="w-4 h-4" />
+            Reset All Data
           </button>
         </div>
       </div>

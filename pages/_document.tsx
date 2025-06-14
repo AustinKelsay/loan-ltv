@@ -6,8 +6,7 @@ export default function Document() {
       <Head>
         <meta charSet="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Loan LTV Demo - Lightning Network</title>
-        <meta name="description" content="Lightning Network Loan-to-Value ratio demo with Voltage Pay API integration" />
+        <meta name="description" content="Loan Lightning Topup Visualizer - Bitcoin-backed loan management with Lightning Network integration" />
       </Head>
       <body>
         <Main />

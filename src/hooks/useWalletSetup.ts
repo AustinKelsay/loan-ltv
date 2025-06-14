@@ -2,14 +2,16 @@
 import { useState, useEffect } from 'react';
 import { useVoltageAPI } from './useVoltageAPI';
 
-// Local storage keys for wallet persistence
+// Local storage keys for wallet and transaction persistence
 const WALLET_STORAGE_KEYS = {
   WALLET_SETUP: 'loan_ltv_wallet_setup',
   WALLET_CONFIG: 'loan_ltv_wallet_config',
   WALLET_TYPE: 'loan_ltv_wallet_type',
   SELF_CUSTODIAL_TYPE: 'loan_ltv_self_custodial_type',
   NWC_STRING: 'loan_ltv_nwc_string',
-  LNURLW_STRING: 'loan_ltv_lnurlw_string'
+  LNURLW_STRING: 'loan_ltv_lnurlw_string',
+  TRANSACTIONS: 'loan_ltv_transactions',
+  LOAN_STATE: 'loan_ltv_loan_state'
 };
 
 /**

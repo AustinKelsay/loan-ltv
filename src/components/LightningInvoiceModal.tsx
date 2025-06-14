@@ -72,7 +72,7 @@ const LightningInvoiceModal = ({
     }
   };
 
-  const openLNbitsWallet = () => {
+  const openVoltageWallet = () => {
     if (invoice.walletUrl) {
       window.open(invoice.walletUrl, '_blank');
     }
@@ -81,7 +81,7 @@ const LightningInvoiceModal = ({
   let modalTitle = 'Lightning Invoice';
   if (isOutgoingPayment && !isAutoLiquidation) modalTitle = 'Processing Lightning Payment';
   if (isAutoLiquidation) modalTitle = '🚨 Auto-Liquidation';
-  if (isCustodialFunding) modalTitle = 'Fund Your LNbits Wallet';
+  if (isCustodialFunding) modalTitle = 'Fund Your Voltage Wallet';
   if (isErrorState) modalTitle = 'Payment Failed';
   if (isSuccessState && isOutgoingPayment && !isAutoLiquidation) modalTitle = 'Payment Sent Successfully';
   if (isSuccessState && isAutoLiquidation) modalTitle = '🚨 Liquidation Complete';
@@ -104,6 +104,8 @@ const LightningInvoiceModal = ({
             isSuccess={isSuccessState}
             isAutoLiquidation={isAutoLiquidation}
             ltvAtLiquidation={invoice.ltvAtLiquidation}
+            updatedAmount={invoice.updatedAmount}
+            originalAmount={invoice.originalAmount}
           />
         )}
         
@@ -137,14 +139,14 @@ const LightningInvoiceModal = ({
         {isErrorState && <ErrorDisplay message={paymentError} />}
         {isSuccessState && <SuccessDisplay isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} />}
         
-        {/* LNbits wallet management button */}
+        {/* Voltage wallet management button */}
         {isCustodialFunding && invoice.walletUrl && (
           <button
-            onClick={openLNbitsWallet}
+            onClick={openVoltageWallet}
             className="w-full py-3 mb-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors flex items-center justify-center gap-2 text-white"
           >
             <ExternalLink className="w-4 h-4" />
-            Open LNbits Wallet
+            Open Voltage Wallet
           </button>
         )}
         
@@ -196,7 +198,7 @@ const InvoiceDisplay = ({ invoiceString, onCopy, isSuccess, isCustodial }) => (
   <div className={`bg-black p-4 rounded-lg mb-4 ${isSuccess ? 'border border-green-500' : ''}`}>
     <div className="flex justify-between items-center mb-2">
       <span className="text-xs text-gray-400">
-        {isCustodial ? 'LNbits Wallet Invoice' : 'Invoice'} (click to copy)
+        {isCustodial ? 'Voltage Wallet Invoice' : 'Invoice'} (click to copy)
       </span>
       {!isSuccess && (
         <button
@@ -222,7 +224,7 @@ const InvoiceDisplay = ({ invoiceString, onCopy, isSuccess, isCustodial }) => (
  * OutgoingPaymentDisplay Component
  * Shows details of an outgoing payment being processed
  */
-const OutgoingPaymentDisplay = ({ targetAddress, amountSats, btcPrice, comment, isSuccess, isAutoLiquidation, ltvAtLiquidation }) => (
+const OutgoingPaymentDisplay = ({ targetAddress, amountSats, btcPrice, comment, isSuccess, isAutoLiquidation, ltvAtLiquidation, updatedAmount, originalAmount }) => (
   <div className={`p-4 rounded-lg mb-4 text-center ${
     isAutoLiquidation ? 
       (isSuccess ? 'bg-red-900/30 border border-red-500' : 'bg-red-900/20') : 
@@ -242,6 +244,23 @@ const OutgoingPaymentDisplay = ({ targetAddress, amountSats, btcPrice, comment, 
         (isSuccess ? 'Sent' : 'Sending')
       } {formatSats(amountSats)}
     </p>
+    
+    {/* Show amount update notification for auto-liquidations */}
+    {isAutoLiquidation && updatedAmount && originalAmount && originalAmount !== amountSats && (
+      <div className="mb-2 p-2 bg-yellow-900/30 border border-yellow-600 rounded text-xs text-yellow-300">
+        <div className="flex items-center justify-center gap-1 mb-1">
+          <span>📊</span>
+          <strong>Amount Updated</strong>
+        </div>
+        <div>
+          {formatSats(originalAmount)} → {formatSats(amountSats)}
+        </div>
+        <div className="text-yellow-400 mt-1">
+          (Adjusted for price changes)
+        </div>
+      </div>
+    )}
+    
     <p className="text-gray-400 mb-1">
       (≈ ${satsToUSD(amountSats, btcPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
     </p>
