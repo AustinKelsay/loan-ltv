@@ -6,6 +6,7 @@ import { useSystemLogs } from '../hooks/useSystemLogs';
 import { useTransactionStorage } from '../hooks/useTransactionStorage';
 import WalletSetupModal from './WalletSetupModal';
 import LightningInvoiceModal from './LightningInvoiceModal';
+import LoanSubmissionModal from './LoanSubmissionModal';
 import SystemLogsPanel from './SystemLogsPanel';
 import Tooltip, { QuestionMarkIcon } from './Tooltip';
 import { 
@@ -15,6 +16,7 @@ import {
   parseToSats,
   isValidSatsAmount 
 } from '../utils/bitcoinUnits';
+import { LIQUIDATION_THRESHOLDS } from '../constants';
 
 // Test utility will be loaded dynamically on client side only
 
@@ -39,7 +41,7 @@ const mockAPI = {
         amountSats: btcToSats(1.5), // 1.5 BTC in sats (150,000,000 sats)
         currency: "BTC"
       },
-      liquidationThreshold: 85, // 85% LTV triggers liquidation
+      liquidationThreshold: 80, // 80% LTV triggers liquidation
       warningThreshold: 70, // 70% LTV shows warning
       interestRate: 8.5,
       status: "active",
@@ -117,15 +119,15 @@ const usePriceFeed = (initialPrice = 100000) => {
   const [priceChange, setPriceChange] = useState(-0.5);
   
   useEffect(() => {
-    // Simulate price fluctuations every 10 seconds (slower for better observation of smart liquidation updates)
+    // Simulate price fluctuations every 15 seconds (more realistic and less distracting)
     const interval = setInterval(() => {
       setPrice(prev => {
-        const change = (Math.random() - 0.5) * 6000; // Reduced volatility: ±$3,000 instead of ±$4,000
+        const change = (Math.random() - 0.5) * 3000; // Much lower volatility: ±$1,500 max
         const newPrice = Math.max(20000, Math.min(140000, prev + change)); // Keep within 20k-140k range
         setPriceChange(((newPrice - prev) / prev) * 100);
         return newPrice;
       });
-    }, 10000); // Changed from 5000ms to 10000ms
+    }, 15000); // Changed from 10000ms to 15000ms (15 seconds)
     
     return () => clearInterval(interval);
   }, []);
@@ -145,7 +147,7 @@ export default function LoanLTVDemo() {
   const transactionStorage = useTransactionStorage(systemLogs);
   
   // Destructure transaction storage for easier access
-  const { transactions, loan, isInitialized: transactionStorageReady, addTransaction, updateLoan } = transactionStorage;
+  const { transactions, loan, isInitialized: transactionStorageReady, addTransaction, updateLoan, createLoan, clearLoan } = transactionStorage;
   
   // Top-up state (amounts in sats)
   const [topupAmount, setTopupAmount] = useState(500000); // 0.005 BTC = 500K sats
@@ -158,6 +160,12 @@ export default function LoanLTVDemo() {
   
   // Wallet deletion confirmation modal state
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  
+  // Loan submission modal state
+  const [showLoanSubmission, setShowLoanSubmission] = useState(false);
+  
+  // Track recent liquidation to prevent re-triggering
+  const [lastLiquidationTime, setLastLiquidationTime] = useState(0);
   
   // Price feed hook
   const { price: btcPrice, priceChange, setPrice: setBtcPrice } = usePriceFeed();
@@ -186,18 +194,23 @@ export default function LoanLTVDemo() {
     // LTV calculation based on total collateral
     const ltv = (loan.principal / totalCollateralValueUSD) * 100;
     
-    // Status based on liquidation thresholds
-    const lightningLiquidationThreshold = 85; // Lightning wallet liquidates
-    const loanLiquidationThreshold = 90; // Main loan liquidates (game over)
+    // Status based on liquidation thresholds from constants
+    const lightningLiquidationThreshold = LIQUIDATION_THRESHOLDS.LIGHTNING_LIQUIDATION;
+    const loanLiquidationThreshold = LIQUIDATION_THRESHOLDS.LOAN_LIQUIDATION;
     
     let ltvStatus, gameStatus;
-    if (ltv >= loanLiquidationThreshold) {
+    
+    // Check if loan is already permanently liquidated
+    if (loan.status === 'liquidated') {
+      ltvStatus = 'liquidated';
+      gameStatus = 'loan_liquidated'; // Permanent game over state
+    } else if (ltv >= loanLiquidationThreshold) {
       ltvStatus = 'liquidated';
       gameStatus = 'loan_liquidated'; // Game over
     } else if (ltv >= lightningLiquidationThreshold) {
       ltvStatus = 'critical';
       gameStatus = 'lightning_zone'; // Lightning wallet at risk
-    } else if (ltv >= 70) {
+    } else if (ltv >= LIQUIDATION_THRESHOLDS.WARNING) {
       ltvStatus = 'warning';
       gameStatus = 'safe';
     } else {
@@ -234,7 +247,7 @@ export default function LoanLTVDemo() {
 
   /**
    * Automatic liquidation logic for custodial wallets
-   * Triggers when LTV exceeds liquidation threshold (85%)
+   * Triggers when LTV exceeds liquidation threshold (80%)
    */
   useEffect(() => {
     const checkForAutoLiquidation = async () => {
@@ -245,12 +258,17 @@ export default function LoanLTVDemo() {
       systemLogs.logDebug(`Wallet balance: ${walletState.custodialWallet?.balanceSats || 0} sats, available (minus reserve): ${availableBalance} sats`);
       systemLogs.logDebug(`LTV: ${metrics?.ltv?.toFixed(1)}%, liquidation threshold: ${loan?.liquidationThreshold}%`);
       
+      // Prevent re-triggering liquidation within 30 seconds of last one
+      const timeSinceLastLiquidation = Date.now() - lastLiquidationTime;
+      const liquidationCooldownMs = 30000; // 30 seconds
+      
       // Only auto-liquidate if:
       // 1. We have a custodial wallet setup
-      // 2. LTV is at or above Lightning liquidation threshold (85%)
+              // 2. LTV is at or above Lightning liquidation threshold
       // 3. Wallet has available balance to liquidate (minus reserve)
       // 4. Not already processing a payment
       // 5. Main loan hasn't been liquidated yet
+      // 6. Enough time has passed since last liquidation (prevent rapid re-triggering)
       if (
         walletState.walletSetup &&
         walletState.walletConfig.type === 'custodial' &&
@@ -259,7 +277,8 @@ export default function LoanLTVDemo() {
         metrics?.ltv >= metrics?.lightningLiquidationThreshold &&
         metrics?.gameStatus !== 'loan_liquidated' &&
         !processingPayment &&
-        !showInvoice
+        !showInvoice &&
+        timeSinceLastLiquidation > liquidationCooldownMs
       ) {
         systemLogs.logLiquidation(`🚨 LIGHTNING AUTO-LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.lightningLiquidationThreshold}%`);
         systemLogs.logPayment(`💸 Sending ${formatSats(availableBalance)} to austin@vlt.ge (keeping ${VOLTAGE_RESERVE_SATS} sats reserve)`);
@@ -312,7 +331,9 @@ export default function LoanLTVDemo() {
       }
 
       // Check for main loan liquidation (90% LTV - game over)
+      // Only trigger if loan isn't already liquidated
       if (
+        loan.status !== 'liquidated' &&
         metrics?.ltv >= metrics?.loanLiquidationThreshold &&
         metrics?.gameStatus !== 'loan_liquidated' &&
         !processingPayment &&
@@ -320,7 +341,7 @@ export default function LoanLTVDemo() {
       ) {
         systemLogs.logLiquidation(`💀 LOAN LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.loanLiquidationThreshold}%`);
         
-        // Mark loan as liquidated in transaction history
+        // Mark loan as liquidated in transaction history FIRST
         const liquidationTx = {
           id: `tx-${Date.now()}`,
           type: "loan_liquidation",
@@ -329,22 +350,27 @@ export default function LoanLTVDemo() {
           timestamp: new Date().toISOString(),
           status: "completed",
           ltvAtLiquidation: metrics.ltv,
+          loanId: loan.loanId,
+          principal: loan.principal,
           gameOver: true
         };
         
+        // Add transaction first
         addTransaction(liquidationTx);
         
-        // Zero out the loan collateral (loan is liquidated)
+        // Mark loan as liquidated in the loan object itself (permanent status)
         updateLoan(prev => ({
           ...prev,
-          collateral: {
-            ...prev.collateral,
-            amountSats: 0
-          },
-          status: 'liquidated'
+          status: 'liquidated',
+          liquidatedAt: new Date().toISOString(),
+          finalLTV: metrics.ltv
         }));
         
+        // Don't clear the loan immediately - let it show as liquidated
+        // The user can create a new loan, but this one stays in history
+        
         systemLogs.logError('💀 GAME OVER: Main loan has been liquidated!');
+        systemLogs.logInfo('🏦 You can now submit a new loan application');
       }
     };
 
@@ -478,10 +504,14 @@ export default function LoanLTVDemo() {
    */
   const pollCustodialPayment = (paymentDetails) => {
     const paymentHash = paymentDetails.paymentHash; 
-    systemLogs.logInfo(`🔄 Polling payment status for hash: ${paymentHash.substring(0, 8)}...`);
+    const isAutoLiquidation = paymentDetails.paymentType === 'auto_liquidation';
+    
+    systemLogs.logInfo(`🔄 Polling payment status for hash: ${paymentHash.substring(0, 8)}... (${paymentDetails.paymentType})`);
     
     let pollAttempts = 0;
-    const maxAttempts = 30; // 30 attempts × 2 seconds = 60 seconds max
+    // For auto-liquidation, poll more aggressively and with more attempts
+    const maxAttempts = isAutoLiquidation ? 40 : 30; // 40 attempts for auto-liquidation
+    const pollInterval = isAutoLiquidation ? 1000 : 2000; // 1 second for auto-liquidation, 2 seconds for others
     let pollingStopped = false; // Flag to stop polling
     
     const poll = async () => {
@@ -542,36 +572,84 @@ export default function LoanLTVDemo() {
           (paymentStatus.status === 'completed') || 
           (paymentStatus.status === 'succeeded');
         
-        if (isPaymentComplete) {
+        // For auto-liquidation payments, also check for alternative completion indicators
+        // Some Voltage implementations might have different status flows
+        let autoLiquidationComplete = false;
+        if (paymentDetails.paymentType === 'auto_liquidation' && !isPaymentComplete) {
+          // For auto-liquidation, be more aggressive about completion detection
+          if (pollAttempts > 5 && 
+              paymentStatus.status !== 'failed' && 
+              paymentStatus.status !== 'cancelled' &&
+              paymentStatus.status !== 'error' &&
+              paymentStatus.status !== 'receiving') { // receiving is for incoming payments only
+                
+            // Additional check: if the payment has been in sending state for a while, assume success
+            if (paymentStatus.status === 'sending' || 
+                paymentStatus.status === 'pending' ||
+                paymentStatus.status === 'processing') {
+              autoLiquidationComplete = true;
+              systemLogs.logWarning(`⚠️ Auto-liquidation assumed complete after ${pollAttempts} attempts (Status: ${paymentStatus.status})`);
+            }
+            
+            // If we've polled many times and it's not in a clearly pending state, assume success
+            if (pollAttempts > 8 && 
+                paymentStatus.status !== 'sending' && 
+                paymentStatus.status !== 'pending') {
+              autoLiquidationComplete = true;
+              systemLogs.logWarning(`⚠️ Auto-liquidation forced complete after ${pollAttempts} attempts (Status: ${paymentStatus.status})`);
+            }
+          }
+        }
+        
+        if (isPaymentComplete || autoLiquidationComplete) {
           systemLogs.logSuccess(`✅ Payment confirmed! Hash: ${paymentHash.substring(0, 8)}... Status: ${paymentStatus.status}`);
+          systemLogs.logDebug(`🐛 About to call handleSuccessfulPayment for ${paymentDetails.paymentType}`);
+          systemLogs.logDebug(`🐛 Current modal state: showInvoice=${showInvoice}, processingPayment=${processingPayment}`);
+          
           handleSuccessfulPayment(paymentDetails); 
           setPaymentError(null); // Clear error on success
           return;
         }
         
-        // Check if payment has been in 'receiving' state for too long
+        // Check if payment has been in a pending state for too long
         if (paymentStatus.status === 'receiving' && pollAttempts > 15) {
           systemLogs.logWarning(`⚠️ Payment has been in 'receiving' state for ${pollAttempts * 2}s. This might indicate the invoice hasn't been paid yet.`);
+        } else if (paymentStatus.status === 'sending' && pollAttempts > 15) {
+          systemLogs.logWarning(`⚠️ Payment has been in 'sending' state for ${pollAttempts * 2}s. This might indicate the payment is stuck.`);
         }
         
         // Stop polling after max attempts
         if (pollAttempts >= maxAttempts) {
           systemLogs.logWarning(`⏱️ Payment polling timeout after ${maxAttempts} attempts (${maxAttempts * 2}s)`);
           
-          // Provide more helpful error message based on final status
-          let errorMessage = `Payment confirmation timeout. Last status: ${paymentStatus.status}`;
-          if (paymentStatus.status === 'receiving') {
-            errorMessage += '. The invoice may not have been paid yet. Please check if the payment was actually sent.';
+          // For auto-liquidation payments, handle timeout more gracefully
+          if (paymentDetails.paymentType === 'auto_liquidation') {
+            if (paymentStatus.status === 'sending' || paymentStatus.status === 'pending') {
+              // Assume auto-liquidation succeeded if it's been in sending state
+              systemLogs.logWarning(`⚠️ Auto-liquidation timeout in ${paymentStatus.status} state - assuming success`);
+              handleSuccessfulPayment(paymentDetails);
+              return;
+            } else {
+              setPaymentError(`Auto-liquidation may have completed but confirmation timed out. Last status: ${paymentStatus.status}. Please check your wallet balance.`);
+            }
+          } else {
+            // Provide more helpful error message based on final status
+            let errorMessage = `Payment confirmation timeout. Last status: ${paymentStatus.status}`;
+            if (paymentStatus.status === 'receiving') {
+              errorMessage += '. The invoice may not have been paid yet. Please check if the payment was actually sent.';
+            } else if (paymentStatus.status === 'sending') {
+              errorMessage += '. The payment may still be processing. Please check your wallet balance.';
+            }
+            setPaymentError(errorMessage);
           }
           
-          setPaymentError(errorMessage);
           setProcessingPayment(false);
           return;
         }
         
         // Continue polling if not stopped
         if (!pollingStopped) {
-          setTimeout(poll, 2000);
+          setTimeout(poll, pollInterval);
         }
       } catch (error) {
         systemLogs.logError('Payment polling failed', error.message);
@@ -585,7 +663,8 @@ export default function LoanLTVDemo() {
       pollingStopped = true;
     };
     
-    setTimeout(poll, 2000);
+    // Start polling immediately for auto-liquidation, with a small delay for others
+    setTimeout(poll, isAutoLiquidation ? 500 : 2000);
   };
 
   /**
@@ -653,6 +732,9 @@ export default function LoanLTVDemo() {
       // Update custodial wallet balance after liquidation
       updateCustodialWalletBalance();
       
+      // Set liquidation timestamp to prevent re-triggering
+      setLastLiquidationTime(Date.now());
+      
     } else {
       systemLogs.logSuccess(`✅ Top-up completed: ${formatSats(paidAmountSats)} added to collateral`);
       
@@ -690,22 +772,56 @@ export default function LoanLTVDemo() {
     setProcessingPayment(false);
     setPaymentError(null);
     
-    // Auto-close modal after successful payment (with a brief delay to show success state)
-    setTimeout(() => {
-      setShowInvoice(false);
-      setCurrentInvoice(null);
-      systemLogs.logInfo('✅ Payment modal auto-closed after successful completion');
-    }, 2000); // 2 second delay to show success state
+          // For auto-liquidation, close immediately to prevent race conditions
+      if (paymentConfirmation.paymentType === 'auto_liquidation') {
+        systemLogs.logInfo('✅ Auto-liquidation modal closing immediately to prevent re-triggering');
+        systemLogs.logDebug(`🐛 Modal state before closing: showInvoice=${showInvoice}, currentInvoice=${currentInvoice ? 'present' : 'null'}`);
+        
+        // Force close the modal - use both state setters and direct DOM manipulation as backup
+        setShowInvoice(false);
+        setCurrentInvoice(null);
+        setProcessingPayment(false); // Also ensure processing flag is cleared
+        
+        // Add a small delay to ensure state updates are processed, then double-check
+        setTimeout(() => {
+          systemLogs.logDebug(`🐛 Modal state after closing: showInvoice=${showInvoice}, currentInvoice=${currentInvoice ? 'present' : 'null'}`);
+          
+          // If modal is still showing, force it closed again
+          if (showInvoice || currentInvoice) {
+            systemLogs.logWarning('⚠️ Modal still showing after close - forcing close again');
+            setShowInvoice(false);
+            setCurrentInvoice(null);
+            setProcessingPayment(false);
+          }
+        }, 100);
+        
+        systemLogs.logDebug('🐛 Modal close commands issued for auto-liquidation');
+      } else {
+      // Auto-close modal after successful payment (with a brief delay to show success state)
+      setTimeout(() => {
+        setShowInvoice(false);
+        setCurrentInvoice(null);
+        systemLogs.logInfo('✅ Payment modal auto-closed after successful completion');
+      }, 2000); // 2 second delay to show success state
+    }
   };
 
   /**
    * Stops the current payment polling
+   * For auto-liquidation, assumes completion instead of just stopping
    */
   const stopPolling = () => {
     if (window.stopCurrentPolling) {
       window.stopCurrentPolling();
-      systemLogs.logInfo('🛑 Payment polling stopped by user');
-      setPaymentError('Payment polling stopped by user');
+      
+      // For auto-liquidation, assume completion and proceed
+      if (currentInvoice && currentInvoice.paymentType === 'auto_liquidation') {
+        systemLogs.logInfo('🛑 Auto-liquidation polling stopped by user - assuming completion');
+        handleSuccessfulPayment(currentInvoice);
+      } else {
+        systemLogs.logInfo('🛑 Payment polling stopped by user');
+        setPaymentError('Payment polling stopped by user');
+      }
     }
   };
 
@@ -725,18 +841,18 @@ export default function LoanLTVDemo() {
   
   /**
    * Demo function to simulate a market crash 
-   * Calibrated to trigger Lightning liquidation (85%) and potentially loan liquidation (90%)
+   * Calibrated to trigger Lightning liquidation (80%) and potentially loan liquidation (90%)
    */
   const simulateCrash = () => {
-    // Calculate crash needed to hit exactly 87% LTV (between 85% and 90%)
-    const targetLTV = 87; // Right in the danger zone
+    // Calculate crash needed to hit exactly 85% LTV (between 80% and 90%)
+    const targetLTV = 85; // Right in the danger zone between Lightning and Loan liquidation
     const targetCollateralValue = loan.principal / (targetLTV / 100);
     const targetPrice = targetCollateralValue / (metrics?.totalCollateralSats / 100_000_000);
     const crashPrice = Math.max(20000, targetPrice); // Don't go below minimum
     
     const crashPercent = ((btcPrice - crashPrice) / btcPrice * 100);
     systemLogs.logWarning(`📉 Market crash simulated: BTC price dropped from $${btcPrice.toLocaleString()} to $${Math.round(crashPrice).toLocaleString()} (-${crashPercent.toFixed(1)}%)`);
-    systemLogs.logWarning(`📊 Demo Mode: This should trigger Lightning liquidation (85%) - monitor for potential loan liquidation (90%)`);
+    systemLogs.logWarning(`📊 Demo Mode: This should trigger Lightning liquidation (80%) - monitor for potential loan liquidation (90%)`);
     setBtcPrice(crashPrice);
   };
 
@@ -779,6 +895,42 @@ export default function LoanLTVDemo() {
       window.open(walletUrl, '_blank', 'noopener,noreferrer');
     }
   };
+
+  /**
+   * Handles loan submission from the modal with error handling
+   */
+  const handleLoanSubmission = (collateralSats, principalUSD) => {
+    try {
+      // If there's an existing liquidated loan, archive it first
+      if (loan && loan.status === 'liquidated') {
+        systemLogs.logInfo(`📋 Archiving liquidated loan ${loan.loanId}`);
+        // The old loan stays in transaction history, we just replace it with the new one
+      }
+      
+      const newLoan = createLoan(collateralSats, principalUSD);
+      systemLogs.logSuccess(`🏦 New loan created: ${newLoan.loanId}`);
+      systemLogs.logInfo(`💰 Loan amount: $${principalUSD.toLocaleString()}`);
+      systemLogs.logInfo(`₿ Collateral: ${formatSats(collateralSats)} (${(collateralSats / 100_000_000).toFixed(8)} BTC)`);
+      
+      const initialLTV = (principalUSD / satsToUSD(collateralSats, btcPrice)) * 100;
+      systemLogs.logInfo(`📊 Initial LTV: ${initialLTV.toFixed(1)}%`);
+      
+      setShowLoanSubmission(false);
+    } catch (error) {
+      systemLogs.logError('Failed to create loan', error.message);
+      // Don't close modal on error - let user fix the issue
+    }
+  };
+
+  /**
+   * Auto-shows loan submission modal when there's no active loan
+   * (but not when there's a liquidated loan - user must manually create new one)
+   */
+  useEffect(() => {
+    if (transactionStorageReady && !loan && !showLoanSubmission) {
+      setShowLoanSubmission(true);
+    }
+  }, [transactionStorageReady, loan, showLoanSubmission]);
   
   // Show loading state while initializing
   if (!transactionStorageReady || !walletState.initialLoadComplete) {
@@ -821,19 +973,59 @@ export default function LoanLTVDemo() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Loan Liquidation Alert */}
-        {metrics?.gameStatus === 'loan_liquidated' && (
-          <div className="mb-6 bg-black border-2 border-red-600 rounded-lg p-6 text-center">
-            <div className="text-6xl mb-4">💀</div>
-            <h3 className="text-2xl font-bold text-red-500 mb-2">LOAN LIQUIDATED</h3>
-            <p className="text-red-300 mb-4">
-              Your main loan has been liquidated at <strong>{metrics.ltv.toFixed(1)}% LTV</strong>
+        {/* No Loan State - Show message to create loan */}
+        {!loan && (
+          <div className="mb-6 bg-blue-900/20 border border-blue-500 rounded-lg p-6 text-center">
+            <div className="text-6xl mb-4">🏦</div>
+            <h3 className="text-2xl font-bold text-blue-400 mb-2">Ready to Create Your Loan</h3>
+            <p className="text-blue-300 mb-4">
+              Submit a loan application to start exploring the dual liquidation system with Lightning Network integration.
             </p>
-            <p className="text-gray-400 text-sm">
-              Use "Reset All Data" to start fresh. Try to trigger Lightning wallet liquidation (85%) without hitting loan liquidation (90%)!
-            </p>
+            <button
+              onClick={() => setShowLoanSubmission(true)}
+              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-semibold"
+            >
+              Create New Loan
+            </button>
           </div>
         )}
+
+        {/* Loan Content - Only show when loan exists */}
+        {loan && (
+          <>
+            {/* Loan Liquidation Alert */}
+            {metrics?.gameStatus === 'loan_liquidated' && (
+              <div className="mb-6 bg-black border-2 border-red-600 rounded-lg p-6 text-center">
+                <div className="text-6xl mb-4">💀</div>
+                <h3 className="text-2xl font-bold text-red-500 mb-2">LOAN LIQUIDATED</h3>
+                <p className="text-red-300 mb-4">
+                  Your main loan has been liquidated at <strong>{loan.finalLTV?.toFixed(1) || metrics.ltv.toFixed(1)}% LTV</strong>
+                </p>
+                <p className="text-gray-400 text-sm mb-4">
+                  This loan is now permanently liquidated and will remain in your transaction history.
+                </p>
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={() => setShowLoanSubmission(true)}
+                    className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-semibold"
+                  >
+                    Create New Loan
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm('⚠️ This will reset ALL data (wallet, transactions, loan state). Continue?')) {
+                        walletState.resetWalletSetup();
+                        transactionStorage.clearAllData();
+                        systemLogs.logWarning('🗑️ All demo data cleared - ready for fresh start');
+                      }
+                    }}
+                    className="px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+                  >
+                    Reset All Data
+                  </button>
+                </div>
+              </div>
+            )}
 
         {/* Lightning Zone Alert */}
         {metrics?.gameStatus === 'lightning_zone' && metrics?.gameStatus !== 'loan_liquidated' && (
@@ -843,7 +1035,7 @@ export default function LoanLTVDemo() {
               <div>
                 <h3 className="text-lg font-semibold text-orange-500">Lightning Liquidation Zone!</h3>
                 <p className="text-orange-300 mt-1">
-                  LTV is at <strong>{metrics.ltv.toFixed(1)}%</strong> - Your Lightning wallet is at risk of auto-liquidation at 85%.
+                  LTV is at <strong>{metrics.ltv.toFixed(1)}%</strong> - Your Lightning wallet is at risk of auto-liquidation at 80%.
                   <br />
                   <span className="text-yellow-300">📊 Demo Challenge: Can you trigger Lightning liquidation without hitting loan liquidation (90%)?</span>
                 </p>
@@ -904,7 +1096,7 @@ export default function LoanLTVDemo() {
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
             <div className="flex items-center gap-2 text-sm text-gray-400 uppercase tracking-wider mb-2">
               Current LTV
-              <Tooltip content="Demo Challenge: Test market volatility to trigger Lightning wallet liquidation (85% LTV) without triggering main loan liquidation (90% LTV). This demonstrates sophisticated risk management with dual liquidation thresholds.">
+              <Tooltip content="Demo Challenge: Test market volatility to trigger Lightning wallet liquidation (80% LTV) without triggering main loan liquidation (90% LTV). This demonstrates sophisticated risk management with dual liquidation thresholds.">
                 <QuestionMarkIcon />
               </Tooltip>
             </div>
@@ -935,8 +1127,8 @@ export default function LoanLTVDemo() {
                   className="h-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 transition-all duration-500"
                   style={{ width: `${Math.min(metrics?.ltv || 0, 100)}%` }}
                 />
-                {/* Lightning liquidation threshold (85%) */}
-                <div className="absolute top-0 h-full border-l-2 border-orange-400" style={{ left: '85%' }}>
+                              {/* Lightning liquidation threshold (80%) */}
+              <div className="absolute top-0 h-full border-l-2 border-orange-400" style={{ left: '80%' }}>
                   <div className="absolute -top-1 -left-1 w-2 h-2 bg-orange-400 rounded-full"></div>
                 </div>
                 {/* Loan liquidation threshold (90%) */}
@@ -947,7 +1139,7 @@ export default function LoanLTVDemo() {
               <div className="flex justify-between mt-2 text-xs text-gray-500">
                 <span>0%</span>
                 <span>Safe</span>
-                <span className="text-orange-400">⚡85%</span>
+                                  <span className="text-orange-400">⚡80%</span>
                 <span className="text-red-400">💀90%</span>
               </div>
             </div>
@@ -970,7 +1162,7 @@ export default function LoanLTVDemo() {
                 </svg>
               </div>
               <h2 className="text-lg font-medium">Lightning Network Top-Up</h2>
-              <Tooltip content="DEMO MECHANICS: Lightning wallet funds are included in your total collateral and affect LTV calculation. When LTV hits 85%, your Lightning wallet auto-liquidates. When LTV hits 90%, your main loan liquidates. Demo Challenge: Can you trigger Lightning liquidation without loan liquidation?">
+              <Tooltip content="DEMO MECHANICS: Lightning wallet funds are included in your total collateral and affect LTV calculation. When LTV hits 80%, your Lightning wallet auto-liquidates. When LTV hits 90%, your main loan liquidates. Demo Challenge: Can you trigger Lightning liquidation without loan liquidation?">
                 <QuestionMarkIcon />
               </Tooltip>
             </div>
@@ -1000,8 +1192,23 @@ export default function LoanLTVDemo() {
             </div>
           </div>
 
+          {/* Liquidated loan notice */}
+          {metrics?.gameStatus === 'loan_liquidated' && (
+            <div className="bg-red-900/20 border border-red-600 rounded-lg p-4 mb-6 flex items-start gap-3">
+              <div className="text-red-400 mt-0.5">💀</div>
+              <div>
+                <p className="text-sm text-red-300 font-semibold">
+                  Loan Liquidated - Top-ups Disabled
+                </p>
+                <p className="text-sm text-red-400 mt-1">
+                  This loan has been liquidated. Create a new loan to enable Lightning top-ups.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Setup required notice */}
-          {!walletState.walletSetup && (
+          {!walletState.walletSetup && metrics?.gameStatus !== 'loan_liquidated' && (
             <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 mb-6 flex items-start gap-3">
               <div className="text-[#f7931a] mt-0.5">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1112,7 +1319,7 @@ export default function LoanLTVDemo() {
           <div className="space-y-3">
             <button
               onClick={initiateTopUp}
-              disabled={processingPayment || !isValidSatsAmount(topupAmount) || topupAmount <= 0}
+              disabled={processingPayment || !isValidSatsAmount(topupAmount) || topupAmount <= 0 || metrics?.gameStatus === 'loan_liquidated'}
               className="w-full bg-gradient-to-r from-orange-500 to-yellow-500 hover:from-orange-600 hover:to-yellow-600 text-black font-medium h-12 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
             >
               <div className="mr-2">
@@ -1173,17 +1380,21 @@ export default function LoanLTVDemo() {
                       tx.type === 'loan_liquidation' ? 'bg-black border-2 border-red-600 text-red-400' :
                       tx.type === 'auto_liquidation' ? 'bg-red-500/20 text-red-400' :
                       tx.type === 'lightning_topup' ? 'bg-orange-500/20 text-orange-400' : 
+                      tx.type === 'loan_created' ? 'bg-green-500/20 text-green-400' :
                       'bg-blue-500/20 text-blue-400'
                     }`}>
                       {tx.type === 'loan_liquidation' ? '💀' :
                        tx.type === 'auto_liquidation' ? '🚨' : 
-                       tx.type === 'lightning_topup' ? <Zap className="w-5 h-5" /> : '📥'}
+                       tx.type === 'lightning_topup' ? <Zap className="w-5 h-5" /> : 
+                       tx.type === 'loan_created' ? '🏦' :
+                       '📥'}
                     </div>
                     <div>
                       <h4 className="font-medium">
                         {tx.type === 'loan_liquidation' ? `💀 LOAN LIQUIDATED (LTV ${tx.ltvAtLiquidation?.toFixed(1)}%)` :
                          tx.type === 'auto_liquidation' ? `🚨 Lightning Auto-Liquidation (LTV ${tx.ltvAtLiquidation?.toFixed(1)}%)` :
-                         tx.type === 'lightning_topup' ? 'Lightning Top-up' : 
+                         tx.type === 'lightning_topup' ? 'Lightning Collateral Top-up' : 
+                         tx.type === 'loan_created' ? `🏦 Loan Created ($${tx.principal?.toLocaleString()})` :
                          'Initial Bitcoin Deposit'}
                       </h4>
                       <p className="text-sm text-gray-400">
@@ -1210,6 +1421,8 @@ export default function LoanLTVDemo() {
             )}
           </div>
         </div>
+        </>
+        )}
       </div>
 
       {/* Modals */}
@@ -1227,6 +1440,13 @@ export default function LoanLTVDemo() {
         paymentError={paymentError}
         onClose={closeInvoiceModal}
         onStopPolling={stopPolling}
+      />
+
+      <LoanSubmissionModal
+        isOpen={showLoanSubmission}
+        onClose={() => setShowLoanSubmission(false)}
+        onSubmitLoan={handleLoanSubmission}
+        btcPrice={btcPrice}
       />
 
       {/* Delete Wallet Confirmation Modal */}
@@ -1307,10 +1527,10 @@ export default function LoanLTVDemo() {
           
           <button
             onClick={() => {
-              if (confirm('⚠️ This will reset ALL data (wallet, transactions, loan state) to defaults. Continue?')) {
+              if (confirm('⚠️ This will reset ALL data (wallet, transactions, loan state). Continue?')) {
                 walletState.resetWalletSetup();
                 transactionStorage.clearAllData();
-                systemLogs.logWarning('🗑️ All demo data reset to defaults');
+                systemLogs.logWarning('🗑️ All demo data cleared - ready for fresh start');
               }
             }}
             className="flex items-center gap-2 px-4 py-2 bg-gray-600 rounded-lg hover:bg-gray-700 transition-colors cursor-pointer text-sm"

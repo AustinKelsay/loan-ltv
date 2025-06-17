@@ -340,7 +340,18 @@ export const useVoltageAPI = (logger: Logger | null = null) => {
       // Convert status to paid boolean based on Voltage API documentation
       // For receiving payments: 'completed' means payment received successfully
       // For sending payments: 'completed' means payment sent successfully
+      // Also check for 'succeeded' as an alternative completion status
       let paid = payment.status === 'completed' || payment.status === 'succeeded';
+      
+      // For send payments (like auto-liquidation), also check for specific completion states
+      if (!paid && payment.direction === 'send') {
+        // Some Voltage API implementations might use different status values
+        // Check for other potential completion indicators for send payments
+        if (payment.status === 'sent' || payment.status === 'successful') {
+          paid = true;
+          log('debug', `Send payment marked as paid due to status: ${payment.status}`);
+        }
+      }
       
       // Additional check: For receive payments, also check if there are any receipts/outflows
       // indicating the payment was actually received
@@ -356,6 +367,9 @@ export const useVoltageAPI = (logger: Logger | null = null) => {
           log('debug', `Payment marked as paid due to receipts present`);
         }
       }
+      
+      // Enhanced logging for debugging
+      log('debug', `Payment ${paymentId.substring(0, 8)}... status: ${payment.status}, direction: ${payment.direction}, paid: ${paid}`);
       
       // Add sats conversion if amount is present
       if (payment.data && payment.data.amount_msats) {

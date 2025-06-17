@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { btcToSats } from '../utils/bitcoinUnits';
 
 // Local storage keys
 const STORAGE_KEYS = {
@@ -24,37 +23,7 @@ export const useTransactionStorage = (logger = null) => {
     }
   };
 
-  /**
-   * Default initial loan state
-   * Optimized for ~$100k BTC price: 1.5 BTC × $100k = $150k collateral, $30k loan = 20% LTV
-   */
-  const getDefaultLoan = () => ({
-    loanId: "LOAN-001",
-    userId: "user123",
-    principal: 30000, // $30,000 USD
-    currency: "USDC",
-    collateral: {
-      amountSats: btcToSats(1.5), // 1.5 BTC in sats (150,000,000 sats)
-      currency: "BTC"
-    },
-    liquidationThreshold: 85, // 85% LTV triggers liquidation
-    warningThreshold: 70, // 70% LTV shows warning
-    interestRate: 8.5,
-    status: "active",
-    createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()
-  });
 
-  /**
-   * Default initial transaction (initial Bitcoin deposit)
-   */
-  const getDefaultTransaction = () => ({
-    id: "tx-001",
-    type: "initial_deposit",
-    amountSats: btcToSats(1.5), // 1.5 BTC initial deposit
-    currency: "BTC",
-    timestamp: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-    status: "completed"
-  });
 
   /**
    * Saves transactions to localStorage
@@ -158,22 +127,79 @@ export const useTransactionStorage = (logger = null) => {
       localStorage.removeItem(STORAGE_KEYS.TRANSACTIONS);
       localStorage.removeItem(STORAGE_KEYS.LOAN_STATE);
       
-      // Reset to defaults
-      const defaultLoan = getDefaultLoan();
-      const defaultTransaction = getDefaultTransaction();
+      // Reset to fresh start state (no loan)
+      setLoan(null);
+      setTransactions([]);
       
-      setLoan(defaultLoan);
-      setTransactions([defaultTransaction]);
-      
-      // Save defaults
-      saveLoan(defaultLoan);
-      saveTransactions([defaultTransaction]);
-      
-      log('warning', '🗑️ All transaction and loan data cleared, reset to defaults');
+      log('warning', '🗑️ All transaction and loan data cleared, fresh start');
     } catch (error) {
       log('error', 'Failed to clear data', error.message);
     }
   };
+
+  /**
+   * Creates a new loan and adds it to transaction history
+   * Uses constants for consistency and validates inputs
+   */
+  const createLoan = useCallback((collateralSats, loanPrincipal = 30000) => {
+    // Input validation
+    if (!collateralSats || collateralSats < 1000000) { // Minimum 0.01 BTC
+      throw new Error('Collateral must be at least 1,000,000 sats (0.01 BTC)');
+    }
+    if (!loanPrincipal || loanPrincipal < 1000) { // Minimum $1,000
+      throw new Error('Loan principal must be at least $1,000');
+    }
+
+    const loanId = `LOAN-${Date.now()}`;
+    const timestamp = new Date().toISOString();
+    
+    const newLoan = {
+      loanId,
+      userId: "user123",
+      principal: loanPrincipal, // USD
+      currency: "USDC",
+      collateral: {
+        amountSats: collateralSats,
+        currency: "BTC"
+      },
+      liquidationThreshold: 80, // 80% LTV triggers Lightning liquidation
+      warningThreshold: 65, // 65% LTV shows warning
+      interestRate: 8.5,
+      status: "active",
+      createdAt: timestamp
+    };
+    
+    // Create loan creation transaction
+    const loanCreationTx = {
+      id: `tx-loan-${Date.now() + 1}`, // Ensure unique ID
+      type: "loan_created",
+      amountSats: collateralSats,
+      currency: "BTC",
+      timestamp: timestamp,
+      status: "completed",
+      loanId: loanId,
+      principal: loanPrincipal
+    };
+    
+    // Set loan first, then add transaction to ensure proper order
+    setLoan(newLoan);
+    
+    // Add transaction after loan is set (React will batch these updates)
+    addTransaction(loanCreationTx);
+    
+    log('success', `✅ New loan created: ${loanId}`, `Collateral: ${collateralSats} sats, Principal: $${loanPrincipal}`);
+    
+    return newLoan;
+  }, [addTransaction]);
+
+  /**
+   * Clears the current loan (used after liquidation)
+   */
+  const clearLoan = useCallback(() => {
+    setLoan(null);
+    localStorage.removeItem(STORAGE_KEYS.LOAN_STATE);
+    log('info', '🗑️ Current loan cleared');
+  }, []);
 
   /**
    * Initialize data on mount
@@ -191,19 +217,16 @@ export const useTransactionStorage = (logger = null) => {
         setTransactions(savedTransactions);
         setLoan(savedLoan);
         log('success', '✅ Existing transaction and loan data restored');
+      } else if (savedTransactions) {
+        // Have transactions but no loan (after liquidation)
+        setTransactions(savedTransactions);
+        setLoan(null);
+        log('info', '📝 Transactions restored, no active loan');
       } else {
-        // Set up defaults
-        const defaultLoan = getDefaultLoan();
-        const defaultTransaction = getDefaultTransaction();
-        
-        setLoan(defaultLoan);
-        setTransactions([defaultTransaction]);
-        
-        // Save defaults
-        saveLoan(defaultLoan);
-        saveTransactions([defaultTransaction]);
-        
-        log('info', '📝 No existing data found, initialized with defaults');
+        // Fresh start - no data at all
+        setTransactions([]);
+        setLoan(null);
+        log('info', '📝 Fresh start - no existing data found');
       }
       
       setIsInitialized(true);
@@ -213,16 +236,24 @@ export const useTransactionStorage = (logger = null) => {
     initializeData();
   }, []); // Run only on mount
 
-  // Auto-save when data changes
+  // Auto-save when data changes (only if not already saved in the action)
   useEffect(() => {
     if (isInitialized && transactions.length > 0) {
-      saveTransactions(transactions);
+      // Only save if this isn't from a direct action (which already saves)
+      const timeoutId = setTimeout(() => {
+        saveTransactions(transactions);
+      }, 100); // Small delay to avoid duplicate saves
+      return () => clearTimeout(timeoutId);
     }
   }, [transactions, isInitialized, saveTransactions]);
 
   useEffect(() => {
     if (isInitialized && loan) {
-      saveLoan(loan);
+      // Only save if this isn't from a direct action (which already saves)
+      const timeoutId = setTimeout(() => {
+        saveLoan(loan);
+      }, 100); // Small delay to avoid duplicate saves
+      return () => clearTimeout(timeoutId);
     }
   }, [loan, isInitialized, saveLoan]);
 
@@ -235,6 +266,8 @@ export const useTransactionStorage = (logger = null) => {
     // Actions
     addTransaction,
     updateLoan,
+    createLoan,
+    clearLoan,
     setTransactions,
     setLoan,
     

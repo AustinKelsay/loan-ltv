@@ -129,13 +129,16 @@ const LightningInvoiceModal = ({
               amountSats={invoice.amountSats} 
               btcPrice={btcPrice} 
             />
+            {isCustodialFunding && !isSuccessState && (
+              <MutinynetFaucetLink />
+            )}
           </>
         )}
         
         {!isErrorState && !isOutgoingPayment && !isSuccessState && <ExpiryInfo />}
         
         {/* Status/Error Display Area */}
-        {processingPayment && <PaymentStatus isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} onStopPolling={onStopPolling} />}
+        {processingPayment && <PaymentStatus isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} isAutoLiquidation={isAutoLiquidation} onStopPolling={onStopPolling} />}
         {isErrorState && <ErrorDisplay message={paymentError} />}
         {isSuccessState && <SuccessDisplay isOutgoing={isOutgoingPayment} isCustodial={isCustodialFunding} />}
         
@@ -312,10 +315,11 @@ const ExpiryInfo = () => (
  * PaymentStatus Component
  * Shows payment processing status with loading animation and stop button
  */
-const PaymentStatus = ({ isOutgoing, isCustodial, onStopPolling }) => {
+const PaymentStatus = ({ isOutgoing, isCustodial, onStopPolling, isAutoLiquidation }) => {
   let message = 'Waiting for incoming payment...';
   if (isOutgoing) message = 'Processing payment... Please wait.';
   if (isCustodial) message = 'Waiting for wallet funding...';
+  if (isAutoLiquidation) message = 'Processing auto-liquidation...';
   
   return (
     <div className="my-4">
@@ -328,7 +332,7 @@ const PaymentStatus = ({ isOutgoing, isCustodial, onStopPolling }) => {
           onClick={onStopPolling}
           className="w-full mt-2 py-2 px-4 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md transition-colors"
         >
-          Stop Polling
+          {isAutoLiquidation ? 'Force Close & Assume Complete' : 'Stop Polling'}
         </button>
       )}
     </div>
@@ -362,5 +366,28 @@ const SuccessDisplay = ({ isOutgoing, isCustodial }) => {
     </div>
   );
 };
+
+/**
+ * MutinynetFaucetLink Component
+ * Shows a link to the mutinynet faucet for getting testnet funds
+ */
+const MutinynetFaucetLink = () => (
+  <div className="bg-purple-900/20 border border-purple-500 rounded-lg p-4 mb-4">
+    <div className="flex items-center gap-3 mb-2">
+      <div className="text-purple-400">🚰</div>
+      <h5 className="font-semibold text-purple-400">Need Signet Funds?</h5>
+    </div>
+    <p className="text-sm text-purple-300 mb-3">
+      Get free signet Bitcoin to pay this invoice using the Mutinynet faucet.
+    </p>
+    <button
+      onClick={() => window.open('https://faucet.mutinynet.com/', '_blank')}
+      className="w-full py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors flex items-center justify-center gap-2 text-white text-sm"
+    >
+      <ExternalLink className="w-4 h-4" />
+      Open Mutinynet Faucet
+    </button>
+  </div>
+);
 
 export default LightningInvoiceModal; 

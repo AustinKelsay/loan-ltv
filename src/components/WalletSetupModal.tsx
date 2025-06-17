@@ -104,19 +104,19 @@ const WalletTypeSelection = ({ onSelectType }) => (
     <p className="text-gray-400 mb-6">Choose how you want to manage your Lightning wallet for top-ups:</p>
     
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <button
-        onClick={() => onSelectType('self-custodial')}
-        className="p-6 bg-gray-800 border border-gray-700 rounded-lg hover:border-orange-500 transition-colors text-left cursor-pointer"
-      >
-        <div className="flex items-center gap-3 mb-3">
-          <Wallet className="w-6 h-6 text-orange-400" />
-          <h4 className="text-lg font-semibold">Self-Custodial</h4>
+      <div className="p-6 bg-gray-800 border border-gray-700 rounded-lg opacity-50 text-left cursor-not-allowed relative">
+        <div className="absolute top-2 right-2 bg-orange-500 text-black text-xs px-2 py-1 rounded font-semibold">
+          Coming Soon
         </div>
-        <p className="text-gray-400 text-sm">
+        <div className="flex items-center gap-3 mb-3">
+          <Wallet className="w-6 h-6 text-gray-500" />
+          <h4 className="text-lg font-semibold text-gray-500">Self-Custodial</h4>
+        </div>
+        <p className="text-gray-500 text-sm">
           Connect your own Lightning wallet using NWC (Nostr Wallet Connect) or LNURLW (LNURL Withdraw).
           You maintain full control of your funds.
         </p>
-      </button>
+      </div>
       
       <button
         onClick={() => onSelectType('custodial')}
@@ -159,83 +159,73 @@ const SelfCustodialSetup = ({
     
     {/* Method selection */}
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-      <button
-        onClick={() => onSelectType('nwc')}
-        className={`p-4 border rounded-lg transition-colors ${
-          selfCustodialType === 'nwc'
-            ? 'border-orange-500 bg-orange-500/10'
-            : 'border-gray-700 bg-gray-800 hover:border-gray-600'
-        } cursor-pointer`}
-      >
-        <h5 className="font-semibold mb-2">NWC (Nostr Wallet Connect)</h5>
-        <p className="text-sm text-gray-400">
+      <div className="p-4 border border-gray-700 bg-gray-800 rounded-lg opacity-50 cursor-not-allowed relative">
+        <div className="absolute top-2 right-2 bg-orange-500 text-black text-xs px-1.5 py-0.5 rounded font-semibold">
+          Soon
+        </div>
+        <h5 className="font-semibold mb-2 text-gray-500">NWC (Nostr Wallet Connect)</h5>
+        <p className="text-sm text-gray-500">
           Connect via Nostr Wallet Connect string from supported wallets like Alby.
         </p>
-      </button>
+      </div>
       
-      <button
-        onClick={() => onSelectType('lnurlw')}
-        className={`p-4 border rounded-lg transition-colors ${
-          selfCustodialType === 'lnurlw'
-            ? 'border-orange-500 bg-orange-500/10'
-            : 'border-gray-700 bg-gray-800 hover:border-gray-600'
-        } cursor-pointer`}
-      >
-        <h5 className="font-semibold mb-2">LNURLW (LNURL Withdraw)</h5>
-        <p className="text-sm text-gray-400">
+      <div className="p-4 border border-gray-700 bg-gray-800 rounded-lg opacity-50 cursor-not-allowed relative">
+        <div className="absolute top-2 right-2 bg-orange-500 text-black text-xs px-1.5 py-0.5 rounded font-semibold">
+          Soon
+        </div>
+        <h5 className="font-semibold mb-2 text-gray-500">LNURLW (LNURL Withdraw)</h5>
+        <p className="text-sm text-gray-500">
           Use LNURL withdraw links from supported services.
         </p>
-      </button>
+      </div>
     </div>
     
     {/* NWC Setup Form */}
     {selfCustodialType === 'nwc' && (
-      <div className="space-y-4">
+      <div className="space-y-4 opacity-50">
         <div>
-          <label className="block text-sm text-gray-400 mb-2">NWC Connection String</label>
+          <label className="block text-sm text-gray-500 mb-2">NWC Connection String</label>
           <textarea
-            value={nwcString}
-            onChange={(e) => onSetNwcString(e.target.value)}
-            placeholder="nostr+walletconnect://..."
-            className="w-full px-4 py-3 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-orange-500 transition-colors h-24 resize-none cursor-pointer"
+            value=""
+            disabled
+            placeholder="nostr+walletconnect://... (Coming Soon)"
+            className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-gray-500 cursor-not-allowed h-24 resize-none"
           />
-          <p className="text-xs text-gray-500 mt-1">
-            Get this from your Alby wallet or other NWC-supported wallet.
+          <p className="text-xs text-gray-600 mt-1">
+            This feature is coming soon. Get ready with your Alby wallet or other NWC-supported wallet.
           </p>
         </div>
         
         <button
-          onClick={onSetup}
-          disabled={!nwcString.trim()}
-          className="w-full py-3 bg-gradient-to-r from-orange-500 to-yellow-500 text-black font-semibold rounded-lg hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+          disabled
+          className="w-full py-3 bg-gray-700 text-gray-500 font-semibold rounded-lg cursor-not-allowed"
         >
-          Connect NWC Wallet
+          Connect NWC Wallet (Coming Soon)
         </button>
       </div>
     )}
     
     {/* LNURLW Setup Form */}
     {selfCustodialType === 'lnurlw' && (
-      <div className="space-y-4">
+      <div className="space-y-4 opacity-50">
         <div>
-          <label className="block text-sm text-gray-400 mb-2">LNURLW String</label>
+          <label className="block text-sm text-gray-500 mb-2">LNURLW String</label>
           <textarea
-            value={lnurlwString}
-            onChange={(e) => onSetLnurlwString(e.target.value)}
-            placeholder="lnurlw://..."
-            className="w-full px-4 py-3 bg-black border border-gray-700 rounded-lg text-white focus:outline-none focus:border-orange-500 transition-colors h-24 resize-none cursor-pointer"
+            value=""
+            disabled
+            placeholder="lnurlw://... (Coming Soon)"
+            className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-gray-500 cursor-not-allowed h-24 resize-none"
           />
-          <p className="text-xs text-gray-500 mt-1">
-            Paste your LNURL withdraw link here.
+          <p className="text-xs text-gray-600 mt-1">
+            This feature is coming soon. Prepare your LNURL withdraw link.
           </p>
         </div>
         
         <button
-          onClick={onSetup}
-          disabled={!lnurlwString.trim()}
-          className="w-full py-3 bg-gradient-to-r from-orange-500 to-yellow-500 text-black font-semibold rounded-lg hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+          disabled
+          className="w-full py-3 bg-gray-700 text-gray-500 font-semibold rounded-lg cursor-not-allowed"
         >
-          Connect LNURLW
+          Connect LNURLW (Coming Soon)
         </button>
       </div>
     )}
