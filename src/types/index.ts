@@ -40,11 +40,14 @@ export interface Loan {
   interestRate: number;
   status: string;
   createdAt: string;
+  // Liquidation tracking fields
+  liquidatedAt?: string;
+  finalLTV?: number;
 }
 
 export interface Transaction {
   id: string;
-  type: 'initial_deposit' | 'lightning_topup' | 'auto_liquidation';
+  type: 'initial_deposit' | 'lightning_topup' | 'auto_liquidation' | 'loan_liquidation' | 'loan_created';
   amountSats: number;
   currency: string;
   timestamp: string;
@@ -52,6 +55,11 @@ export interface Transaction {
   paymentHash?: string;
   targetAddress?: string;
   ltvAtLiquidation?: number;
+  // Additional fields for loan transactions
+  loanId?: string;
+  principal?: number;
+  gameOver?: boolean;
+  comment?: string;
 }
 
 // Mock API Response Types

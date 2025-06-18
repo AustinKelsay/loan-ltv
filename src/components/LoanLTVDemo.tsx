@@ -167,6 +167,9 @@ export default function LoanLTVDemo() {
   // Track recent liquidation to prevent re-triggering
   const [lastLiquidationTime, setLastLiquidationTime] = useState(0);
   
+  // Track if liquidation is in progress to prevent race conditions
+  const [liquidationInProgress, setLiquidationInProgress] = useState(false);
+  
   // Price feed hook
   const { price: btcPrice, priceChange, setPrice: setBtcPrice } = usePriceFeed();
   
@@ -177,34 +180,65 @@ export default function LoanLTVDemo() {
    * Calculates loan metrics based on current BTC price and loan data
    * Lightning wallet balance is included as part of total collateral
    * Returns collateral value, LTV ratio, status, and required top-up amount
+   * CRITICAL: Once a loan is liquidated, it stays liquidated regardless of price changes
    */
   const calculateMetrics = useCallback(() => {
     if (!loan) return null;
     
-    // Get Lightning wallet balance (part of total collateral)
+    // Check if loan is already permanently liquidated FIRST
+    // Once liquidated, loan state is frozen - no more calculations or changes allowed
+    if (loan.status === 'liquidated' || loan.liquidatedAt) {
+      const finalLTV = loan.finalLTV || 90; // Default to 90% if not stored
+      // Don't log here - this function gets called on every render and causes infinite loops
+      return {
+        // Frozen values - no more live calculations
+        totalCollateralSats: loan.collateral.amountSats,
+        totalCollateralValueUSD: satsToUSD(loan.collateral.amountSats, btcPrice),
+        mainCollateralValueUSD: satsToUSD(loan.collateral.amountSats, btcPrice),
+        lightningCollateralValueUSD: 0, // Lightning wallet was liquidated
+        lightningWalletSats: 0,
+        
+        // Permanent liquidated state
+        ltv: finalLTV,
+        ltvStatus: 'liquidated',
+        gameStatus: 'loan_liquidated',
+        lightningLiquidationThreshold: LIQUIDATION_THRESHOLDS.LIGHTNING_LIQUIDATION,
+        loanLiquidationThreshold: LIQUIDATION_THRESHOLDS.LOAN_LIQUIDATION,
+        
+        // No more top-ups allowed
+        requiredTopupSats: 0
+      };
+    }
+    
+    // Only calculate live metrics for non-liquidated loans
     const lightningWalletSats = walletState.custodialWallet ? 
       Math.max(0, walletState.custodialWallet.balanceSats - VOLTAGE_RESERVE_SATS) : 0;
     
-    // Total collateral = main collateral + Lightning wallet balance
     const totalCollateralSats = loan.collateral.amountSats + lightningWalletSats;
     const totalCollateralValueUSD = satsToUSD(totalCollateralSats, btcPrice);
     const mainCollateralValueUSD = satsToUSD(loan.collateral.amountSats, btcPrice);
     const lightningCollateralValueUSD = satsToUSD(lightningWalletSats, btcPrice);
     
-    // LTV calculation based on total collateral
     const ltv = (loan.principal / totalCollateralValueUSD) * 100;
     
-    // Status based on liquidation thresholds from constants
+    // DEBUG: Log when LTV is high to see what's happening
+    if (ltv >= 85) {
+      console.log('🔥 HIGH LTV DEBUG:', {
+        ltv: ltv.toFixed(1),
+        loanStatus: loan.status,
+        liquidatedAt: loan.liquidatedAt,
+        btcPrice,
+        totalCollateralValueUSD: totalCollateralValueUSD.toFixed(2),
+        principal: loan.principal
+      });
+    }
+    
     const lightningLiquidationThreshold = LIQUIDATION_THRESHOLDS.LIGHTNING_LIQUIDATION;
     const loanLiquidationThreshold = LIQUIDATION_THRESHOLDS.LOAN_LIQUIDATION;
     
     let ltvStatus, gameStatus;
     
-    // Check if loan is already permanently liquidated
-    if (loan.status === 'liquidated') {
-      ltvStatus = 'liquidated';
-      gameStatus = 'loan_liquidated'; // Permanent game over state
-    } else if (ltv >= loanLiquidationThreshold) {
+    if (ltv >= loanLiquidationThreshold) {
       ltvStatus = 'liquidated';
       gameStatus = 'loan_liquidated'; // Game over
     } else if (ltv >= lightningLiquidationThreshold) {
@@ -224,60 +258,113 @@ export default function LoanLTVDemo() {
     const requiredTopupSats = requiredTopupUSD > 0 ? Math.ceil(requiredTopupUSD / btcPrice * 100_000_000) : 0;
     
     return {
-      // Total collateral metrics
       totalCollateralSats,
       totalCollateralValueUSD,
       mainCollateralValueUSD,
       lightningCollateralValueUSD,
       lightningWalletSats,
-      
-      // LTV and status
       ltv,
       ltvStatus,
       gameStatus,
       lightningLiquidationThreshold,
       loanLiquidationThreshold,
-      
-      // Top-up calculations
       requiredTopupSats
     };
-  }, [loan, btcPrice, walletState.custodialWallet, VOLTAGE_RESERVE_SATS]);
+  }, [loan, btcPrice, walletState.custodialWallet?.balanceSats]);
   
   const metrics = calculateMetrics();
 
   /**
-   * Automatic liquidation logic for custodial wallets
-   * Triggers when LTV exceeds liquidation threshold (80%)
+   * Automatic liquidation logic - triggers immediately when thresholds are exceeded
+   * CRITICAL: This must run synchronously to prevent race conditions with price changes
    */
   useEffect(() => {
+    // Skip if no loan or loan is already liquidated
+    if (!loan || loan.status === 'liquidated' || loan.liquidatedAt) {
+      return;
+    }
+    
+    // Skip if no metrics or wallet setup
+    if (!metrics || !walletState.walletSetup) {
+      return;
+    }
+    
+    // Skip if already processing payments or liquidation in progress
+    if (processingPayment || showInvoice || liquidationInProgress) {
+      return;
+    }
+
     const checkForAutoLiquidation = async () => {
-      const availableBalance = walletState.custodialWallet ? 
-        Math.max(0, walletState.custodialWallet.balanceSats - VOLTAGE_RESERVE_SATS) : 0;
-      
-      systemLogs.logLiquidation('🚨 Auto-liquidation check triggered');
-      systemLogs.logDebug(`Wallet balance: ${walletState.custodialWallet?.balanceSats || 0} sats, available (minus reserve): ${availableBalance} sats`);
-      systemLogs.logDebug(`LTV: ${metrics?.ltv?.toFixed(1)}%, liquidation threshold: ${loan?.liquidationThreshold}%`);
-      
       // Prevent re-triggering liquidation within 30 seconds of last one
       const timeSinceLastLiquidation = Date.now() - lastLiquidationTime;
       const liquidationCooldownMs = 30000; // 30 seconds
       
-      // Only auto-liquidate if:
-      // 1. We have a custodial wallet setup
-              // 2. LTV is at or above Lightning liquidation threshold
-      // 3. Wallet has available balance to liquidate (minus reserve)
-      // 4. Not already processing a payment
-      // 5. Main loan hasn't been liquidated yet
-      // 6. Enough time has passed since last liquidation (prevent rapid re-triggering)
+             // Check for main loan liquidation FIRST (90% LTV - game over)
+       // This is the most critical check and should happen immediately
+       if (metrics.ltv >= metrics.loanLiquidationThreshold) {
+         // Set liquidation in progress immediately to prevent race conditions
+         setLiquidationInProgress(true);
+         
+         systemLogs.logLiquidation(`💀 LOAN LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.loanLiquidationThreshold}%`);
+         systemLogs.logDebug(`🐛 Loan before liquidation: Status=${loan.status}, LiquidatedAt=${loan.liquidatedAt}`);
+         
+         // Create the liquidation transaction with current loan data FIRST
+         const liquidationTx = {
+           id: `tx-liquidation-${Date.now()}`,
+           type: "loan_liquidation",
+           amountSats: -loan.collateral.amountSats, // Negative to show collateral removed
+           currency: "BTC",
+           timestamp: new Date().toISOString(),
+           status: "completed",
+           ltvAtLiquidation: metrics.ltv,
+           loanId: loan.loanId,
+           principal: loan.principal,
+           gameOver: true
+         };
+         
+         systemLogs.logDebug(`🐛 About to add liquidation transaction:`, liquidationTx);
+         
+         // Add transaction to history FIRST
+         addTransaction(liquidationTx);
+         
+         // CRITICAL DEBUG: Force check if transaction was actually added
+         console.log('🔥 LIQUIDATION DEBUG: Transaction added', liquidationTx);
+         console.log('🔥 LIQUIDATION DEBUG: Current transactions count', transactions.length);
+         console.log('🔥 LIQUIDATION DEBUG: localStorage transactions', localStorage.getItem('loan_ltv_transactions'));
+         
+         systemLogs.logDebug(`🐛 Transaction added, now updating loan status...`);
+         
+         // Then mark loan as liquidated (permanent status)
+         updateLoan(prev => ({
+           ...prev,
+           status: 'liquidated',
+           liquidatedAt: new Date().toISOString(),
+           finalLTV: metrics.ltv
+         }));
+         
+         // CRITICAL DEBUG: Check loan state after update
+         console.log('🔥 LIQUIDATION DEBUG: Loan updated', loan);
+         console.log('🔥 LIQUIDATION DEBUG: localStorage loan', localStorage.getItem('loan_ltv_loan_state'));
+         
+         systemLogs.logError('💀 GAME OVER: Main loan has been liquidated!');
+         systemLogs.logInfo('🏦 You can now submit a new loan application');
+         systemLogs.logDebug(`🐛 Loan liquidation complete. Exiting liquidation check.`);
+         
+         // Keep liquidation flag set - it will be cleared when a new loan is created
+         // Don't clear it here to prevent re-liquidation
+         return; // Exit early - loan is now liquidated
+       }
+
+      // Check for Lightning wallet auto-liquidation (80% LTV)
+      const availableBalance = walletState.custodialWallet ? 
+        Math.max(0, walletState.custodialWallet.balanceSats - VOLTAGE_RESERVE_SATS) : 0;
+      
       if (
-        walletState.walletSetup &&
         walletState.walletConfig.type === 'custodial' &&
         walletState.custodialWallet &&
         availableBalance > 0 &&
-        metrics?.ltv >= metrics?.lightningLiquidationThreshold &&
-        metrics?.gameStatus !== 'loan_liquidated' &&
-        !processingPayment &&
-        !showInvoice &&
+        availableBalance > LIQUIDATION_THRESHOLDS.MIN_LIQUIDATION_BALANCE &&
+        metrics.ltv >= metrics.lightningLiquidationThreshold &&
         timeSinceLastLiquidation > liquidationCooldownMs
       ) {
         systemLogs.logLiquidation(`🚨 LIGHTNING AUTO-LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.lightningLiquidationThreshold}%`);
@@ -296,9 +383,6 @@ export default function LoanLTVDemo() {
             liquidationAmount,
             paymentComment
           );
-          
-          systemLogs.logDebug(`🐛 Liquidation payment created:`, liquidationPayment);
-          systemLogs.logDebug(`🐛 Payment hash: ${liquidationPayment.payment_hash}`);
           
           const liquidationDetails = {
             paymentType: 'auto_liquidation',
@@ -326,61 +410,12 @@ export default function LoanLTVDemo() {
             targetAddress: 'snstrtest@vlt.ge'
           });
         }
-      } else {
-        systemLogs.logDebug('🚨 Lightning auto-liquidation conditions not met');
-      }
-
-      // Check for main loan liquidation (90% LTV - game over)
-      // Only trigger if loan isn't already liquidated
-      if (
-        loan.status !== 'liquidated' &&
-        metrics?.ltv >= metrics?.loanLiquidationThreshold &&
-        metrics?.gameStatus !== 'loan_liquidated' &&
-        !processingPayment &&
-        !showInvoice
-      ) {
-        systemLogs.logLiquidation(`💀 LOAN LIQUIDATION TRIGGERED! LTV: ${metrics.ltv.toFixed(1)}% >= ${metrics.loanLiquidationThreshold}%`);
-        
-        // Mark loan as liquidated in transaction history FIRST
-        const liquidationTx = {
-          id: `tx-${Date.now()}`,
-          type: "loan_liquidation",
-          amountSats: -loan.collateral.amountSats, // Negative to show collateral removed
-          currency: "BTC",
-          timestamp: new Date().toISOString(),
-          status: "completed",
-          ltvAtLiquidation: metrics.ltv,
-          loanId: loan.loanId,
-          principal: loan.principal,
-          gameOver: true
-        };
-        
-        // Add transaction first
-        addTransaction(liquidationTx);
-        
-        // Mark loan as liquidated in the loan object itself (permanent status)
-        updateLoan(prev => ({
-          ...prev,
-          status: 'liquidated',
-          liquidatedAt: new Date().toISOString(),
-          finalLTV: metrics.ltv
-        }));
-        
-        // Don't clear the loan immediately - let it show as liquidated
-        // The user can create a new loan, but this one stays in history
-        
-        systemLogs.logError('💀 GAME OVER: Main loan has been liquidated!');
-        systemLogs.logInfo('🏦 You can now submit a new loan application');
       }
     };
 
-    // Check for auto-liquidation whenever metrics change
-    if (metrics && loan && walletState.walletSetup) {
-      // Small delay for demo purposes - responsive but not spammy
-      const timeoutId = setTimeout(checkForAutoLiquidation, 3000);
-      return () => clearTimeout(timeoutId);
-    }
-  }, [metrics, loan, walletState.walletSetup, walletState.walletConfig, walletState.custodialWallet, processingPayment, showInvoice]);
+    // Run liquidation check immediately (no delay)
+    checkForAutoLiquidation();
+     }, [metrics, loan, walletState.walletSetup, walletState.walletConfig, walletState.custodialWallet, processingPayment, showInvoice, addTransaction, updateLoan, lastLiquidationTime, liquidationInProgress]);
 
   /**
    * Updates custodial wallet balance after successful operations
@@ -392,8 +427,31 @@ export default function LoanLTVDemo() {
         const updatedWallet = await walletState.voltageAPI.getWalletDetails();
         walletState.setCustodialWallet(updatedWallet);
         systemLogs.logSuccess(`💰 Wallet balance updated: ${updatedWallet.balanceSats} sats`);
+        return updatedWallet;
       } catch (error) {
         systemLogs.logError('Failed to update wallet balance', error.message);
+        throw error;
+      }
+    }
+  };
+
+  /**
+   * Manual wallet balance refresh for troubleshooting
+   */
+  const manualRefreshBalance = async () => {
+    if (walletState.walletConfig.type === 'custodial') {
+      try {
+        systemLogs.logInfo('🔄 Manual wallet balance refresh requested...');
+        const updatedWallet = await updateCustodialWalletBalance();
+        systemLogs.logSuccess(`✅ Manual refresh complete: ${updatedWallet.balanceSats} sats`);
+        
+        // If we have pending transactions that might have completed, add them
+        if (updatedWallet.balanceSats > 0 && walletState.custodialWallet?.balanceSats === 0) {
+          systemLogs.logInfo('💡 Balance detected after refresh - you may have a payment that completed during timeout');
+          systemLogs.logInfo('💡 Consider manually adding the transaction if it\'s missing from Recent Transactions');
+        }
+      } catch (error) {
+        systemLogs.logError('Manual balance refresh failed', error.message);
       }
     }
   };
@@ -407,6 +465,21 @@ export default function LoanLTVDemo() {
       import('../utils/testWalletStorage').catch(console.error);
     }
   }, []);
+
+  /**
+   * Periodic wallet balance refresh for custodial wallets
+   */
+  useEffect(() => {
+    if (walletState.walletConfig?.type === 'custodial' && walletState.walletSetup) {
+      const interval = setInterval(() => {
+        updateCustodialWalletBalance().catch(() => {
+          // Silently handle errors in background refresh
+        });
+      }, 30000); // Refresh every 30 seconds
+
+      return () => clearInterval(interval);
+    }
+  }, [walletState.walletConfig?.type, walletState.walletSetup]);
 
   /**
    * Handles topup amount input changes with validation
@@ -506,165 +579,94 @@ export default function LoanLTVDemo() {
     const paymentHash = paymentDetails.paymentHash; 
     const isAutoLiquidation = paymentDetails.paymentType === 'auto_liquidation';
     
-    systemLogs.logInfo(`🔄 Polling payment status for hash: ${paymentHash.substring(0, 8)}... (${paymentDetails.paymentType})`);
+    systemLogs.logInfo(`🔄 Starting payment polling for ${paymentDetails.paymentType}: ${paymentHash.substring(0, 8)}...`);
     
     let pollAttempts = 0;
-    // For auto-liquidation, poll more aggressively and with more attempts
-    const maxAttempts = isAutoLiquidation ? 40 : 30; // 40 attempts for auto-liquidation
-    const pollInterval = isAutoLiquidation ? 1000 : 2000; // 1 second for auto-liquidation, 2 seconds for others
-    let pollingStopped = false; // Flag to stop polling
+    const maxAttempts = 24; // 2 minutes total (24 * 5 seconds)
+    const pollInterval = 5000; // 5 seconds (slower polling)
+    let pollingStopped = false;
     
     const poll = async () => {
+      if (pollingStopped) {
+        systemLogs.logInfo('🛑 Payment polling stopped');
+        setProcessingPayment(false);
+        return;
+      }
+      
       try {
-        // Check if polling was stopped
-        if (pollingStopped) {
-          systemLogs.logInfo('🛑 Payment polling stopped by user');
-          setProcessingPayment(false);
-          return;
-        }
-        
         pollAttempts++;
-        
-        // For auto-liquidation payments, dynamically update the amount based on current conditions
-        if (paymentDetails.paymentType === 'auto_liquidation') {
-          try {
-            // Get current wallet balance
-            const currentWallet = await walletState.voltageAPI.getWalletDetails();
-            const currentAvailableBalance = Math.max(0, currentWallet.balanceSats - VOLTAGE_RESERVE_SATS);
-            
-            // Check if we still need to liquidate based on current LTV
-            const currentMetrics = calculateLoanMetrics(loan, btcPrice, currentWallet.balanceSats);
-            
-            if (currentMetrics.ltv < currentMetrics.lightningLiquidationThreshold) {
-              systemLogs.logInfo(`📈 Price recovery detected! LTV now ${currentMetrics.ltv.toFixed(1)}% < ${currentMetrics.lightningLiquidationThreshold}% - cancelling auto-liquidation`);
-              setPaymentError('Auto-liquidation cancelled: LTV recovered below liquidation threshold');
-              setProcessingPayment(false);
-              return;
-            }
-            
-            // Update the payment details with current amount if it changed significantly
-            const originalAmount = paymentDetails.amountSats;
-            if (Math.abs(currentAvailableBalance - originalAmount) > originalAmount * 0.05) { // 5% threshold
-              systemLogs.logInfo(`💰 Liquidation amount updated: ${formatSats(originalAmount)} → ${formatSats(currentAvailableBalance)} (price change impact)`);
-              paymentDetails.amountSats = currentAvailableBalance;
-              
-              // Update the modal display
-              setCurrentInvoice(prev => ({
-                ...prev,
-                amountSats: currentAvailableBalance,
-                updatedAmount: true,
-                originalAmount: originalAmount
-              }));
-            }
-          } catch (error) {
-            systemLogs.logWarning('Could not update liquidation amount during polling', error.message);
-          }
-        }
         
         const paymentStatus = await walletState.voltageAPI.checkPayment(paymentHash);
         
-        // Log more detailed status information
-        systemLogs.logDebug(`🐛Payment ${paymentHash.substring(0, 8)}... status: ${paymentStatus.status}, direction: ${paymentStatus.direction}`);
-        systemLogs.logDebug(`🐛Poll attempt ${pollAttempts}/${maxAttempts}: Payment status = ${paymentStatus.status}, paid = ${paymentStatus.paid}`);
-        
-        // For auto-liquidations (sending payments), check for completed status
-        const isPaymentComplete = paymentStatus.paid || 
-          (paymentStatus.status === 'completed') || 
-          (paymentStatus.status === 'succeeded');
-        
-        // For auto-liquidation payments, also check for alternative completion indicators
-        // Some Voltage implementations might have different status flows
-        let autoLiquidationComplete = false;
-        if (paymentDetails.paymentType === 'auto_liquidation' && !isPaymentComplete) {
-          // For auto-liquidation, be more aggressive about completion detection
-          if (pollAttempts > 5 && 
-              paymentStatus.status !== 'failed' && 
-              paymentStatus.status !== 'cancelled' &&
-              paymentStatus.status !== 'error' &&
-              paymentStatus.status !== 'receiving') { // receiving is for incoming payments only
-                
-            // Additional check: if the payment has been in sending state for a while, assume success
-            if (paymentStatus.status === 'sending' || 
-                paymentStatus.status === 'pending' ||
-                paymentStatus.status === 'processing') {
-              autoLiquidationComplete = true;
-              systemLogs.logWarning(`⚠️ Auto-liquidation assumed complete after ${pollAttempts} attempts (Status: ${paymentStatus.status})`);
-            }
-            
-            // If we've polled many times and it's not in a clearly pending state, assume success
-            if (pollAttempts > 8 && 
-                paymentStatus.status !== 'sending' && 
-                paymentStatus.status !== 'pending') {
-              autoLiquidationComplete = true;
-              systemLogs.logWarning(`⚠️ Auto-liquidation forced complete after ${pollAttempts} attempts (Status: ${paymentStatus.status})`);
-            }
-          }
-        }
-        
-        if (isPaymentComplete || autoLiquidationComplete) {
+        if (paymentStatus.paid) {
           systemLogs.logSuccess(`✅ Payment confirmed! Hash: ${paymentHash.substring(0, 8)}... Status: ${paymentStatus.status}`);
-          systemLogs.logDebug(`🐛 About to call handleSuccessfulPayment for ${paymentDetails.paymentType}`);
-          systemLogs.logDebug(`🐛 Current modal state: showInvoice=${showInvoice}, processingPayment=${processingPayment}`);
-          
-          handleSuccessfulPayment(paymentDetails); 
-          setPaymentError(null); // Clear error on success
+          handleSuccessfulPayment(paymentDetails);
           return;
         }
         
-        // Check if payment has been in a pending state for too long
-        if (paymentStatus.status === 'receiving' && pollAttempts > 15) {
-          systemLogs.logWarning(`⚠️ Payment has been in 'receiving' state for ${pollAttempts * 2}s. This might indicate the invoice hasn't been paid yet.`);
-        } else if (paymentStatus.status === 'sending' && pollAttempts > 15) {
-          systemLogs.logWarning(`⚠️ Payment has been in 'sending' state for ${pollAttempts * 2}s. This might indicate the payment is stuck.`);
-        }
-        
-        // Stop polling after max attempts
-        if (pollAttempts >= maxAttempts) {
-          systemLogs.logWarning(`⏱️ Payment polling timeout after ${maxAttempts} attempts (${maxAttempts * 2}s)`);
-          
-          // For auto-liquidation payments, handle timeout more gracefully
-          if (paymentDetails.paymentType === 'auto_liquidation') {
-            if (paymentStatus.status === 'sending' || paymentStatus.status === 'pending') {
-              // Assume auto-liquidation succeeded if it's been in sending state
-              systemLogs.logWarning(`⚠️ Auto-liquidation timeout in ${paymentStatus.status} state - assuming success`);
-              handleSuccessfulPayment(paymentDetails);
-              return;
-            } else {
-              setPaymentError(`Auto-liquidation may have completed but confirmation timed out. Last status: ${paymentStatus.status}. Please check your wallet balance.`);
-            }
-          } else {
-            // Provide more helpful error message based on final status
-            let errorMessage = `Payment confirmation timeout. Last status: ${paymentStatus.status}`;
-            if (paymentStatus.status === 'receiving') {
-              errorMessage += '. The invoice may not have been paid yet. Please check if the payment was actually sent.';
-            } else if (paymentStatus.status === 'sending') {
-              errorMessage += '. The payment may still be processing. Please check your wallet balance.';
-            }
-            setPaymentError(errorMessage);
-          }
-          
+        // Check for failed status
+        if (paymentStatus.status === 'failed' || paymentStatus.status === 'cancelled' || paymentStatus.status === 'error') {
+          systemLogs.logError(`❌ Payment failed with status: ${paymentStatus.status}`);
+          setPaymentError(`Payment failed: ${paymentStatus.status}`);
           setProcessingPayment(false);
           return;
         }
         
-        // Continue polling if not stopped
-        if (!pollingStopped) {
-          setTimeout(poll, pollInterval);
+        // Log progress every 6 attempts (30 seconds) to reduce spam
+        if (pollAttempts % 6 === 0) {
+          systemLogs.logInfo(`⏳ Still polling... ${pollAttempts}/${maxAttempts} attempts (Status: ${paymentStatus.status})`);
         }
+        
+        // Timeout after max attempts
+        if (pollAttempts >= maxAttempts) {
+          systemLogs.logWarning(`⏱️ Payment polling timeout after ${maxAttempts} attempts`);
+          
+          if (isAutoLiquidation && paymentStatus.status === 'sending') {
+            // For auto-liquidation in sending state, assume success
+            systemLogs.logWarning(`⚠️ Auto-liquidation timeout in sending state - assuming success`);
+            handleSuccessfulPayment(paymentDetails);
+          } else {
+            // On timeout, refresh wallet balance to check if payment completed
+            systemLogs.logInfo('🔄 Payment timed out - refreshing wallet balance to check for completion...');
+            setTimeout(async () => {
+              try {
+                const oldBalance = walletState.custodialWallet?.balanceSats || 0;
+                await updateCustodialWalletBalance();
+                const newBalance = walletState.custodialWallet?.balanceSats || 0;
+                
+                if (newBalance > oldBalance) {
+                  systemLogs.logWarning('⚠️ Payment appears to have completed during timeout - balance increased!');
+                  systemLogs.logInfo('💡 You may need to manually refresh or restart the app to see the transaction');
+                  setPaymentError(`Payment may have completed but timed out. Balance increased from ${formatSats(oldBalance)} to ${formatSats(newBalance)}. Try refreshing wallet balance.`);
+                } else {
+                  setPaymentError(`Payment timeout. Status: ${paymentStatus.status}`);
+                }
+              } catch (error) {
+                setPaymentError(`Payment timeout. Status: ${paymentStatus.status}`);
+              }
+              setProcessingPayment(false);
+            }, 1000);
+          }
+          return;
+        }
+        
+        // Continue polling
+        setTimeout(poll, pollInterval);
+        
       } catch (error) {
-        systemLogs.logError('Payment polling failed', error.message);
-        setPaymentError(`Payment polling failed: ${error.message || 'Could not confirm payment'}`);
+        systemLogs.logError('💥 Payment polling failed', error.message);
+        setPaymentError(`Polling failed: ${error.message}`);
         setProcessingPayment(false);
       }
     };
     
-    // Store the stop function globally so it can be called from the modal
+    // Store stop function
     window.stopCurrentPolling = () => {
       pollingStopped = true;
     };
     
-    // Start polling immediately for auto-liquidation, with a small delay for others
-    setTimeout(poll, isAutoLiquidation ? 500 : 2000);
+    // Start polling after 2 seconds
+    setTimeout(poll, 2000);
   };
 
   /**
@@ -708,7 +710,7 @@ export default function LoanLTVDemo() {
         ...prev,
         collateral: {
           ...prev.collateral,
-          amountSats: Math.max(0, prev.collateral.amountSats - paidAmountSats) // Subtract liquidated amount
+          amountSats: Math.max(0, prev.collateral.amountSats - paidAmountSats)
         }
       }));
       
@@ -725,9 +727,7 @@ export default function LoanLTVDemo() {
         ltvAtLiquidation: paymentConfirmation.ltvAtLiquidation
       };
       
-      systemLogs.logDebug(`🐛 Adding liquidation transaction: ${JSON.stringify(liquidationTx)}`);
       addTransaction(liquidationTx);
-      systemLogs.logSuccess(`✅ Liquidation transaction added to history`);
       
       // Update custodial wallet balance after liquidation
       updateCustodialWalletBalance();
@@ -754,11 +754,7 @@ export default function LoanLTVDemo() {
         currency: "BTC",
         timestamp: new Date().toISOString(),
         status: "completed",
-        paymentHash: paymentConfirmation.paymentHash,
-        ...(paymentConfirmation.paymentType === 'outgoing' && { 
-          targetAddress: paymentConfirmation.targetAddress, 
-          comment: paymentConfirmation.comment 
-        })
+        paymentHash: paymentConfirmation.paymentHash
       };
       
       addTransaction(newTx);
@@ -769,58 +765,32 @@ export default function LoanLTVDemo() {
       }
     }
 
+    // Clear payment state
     setProcessingPayment(false);
     setPaymentError(null);
     
-          // For auto-liquidation, close immediately to prevent race conditions
-      if (paymentConfirmation.paymentType === 'auto_liquidation') {
-        systemLogs.logInfo('✅ Auto-liquidation modal closing immediately to prevent re-triggering');
-        systemLogs.logDebug(`🐛 Modal state before closing: showInvoice=${showInvoice}, currentInvoice=${currentInvoice ? 'present' : 'null'}`);
-        
-        // Force close the modal - use both state setters and direct DOM manipulation as backup
-        setShowInvoice(false);
-        setCurrentInvoice(null);
-        setProcessingPayment(false); // Also ensure processing flag is cleared
-        
-        // Add a small delay to ensure state updates are processed, then double-check
-        setTimeout(() => {
-          systemLogs.logDebug(`🐛 Modal state after closing: showInvoice=${showInvoice}, currentInvoice=${currentInvoice ? 'present' : 'null'}`);
-          
-          // If modal is still showing, force it closed again
-          if (showInvoice || currentInvoice) {
-            systemLogs.logWarning('⚠️ Modal still showing after close - forcing close again');
-            setShowInvoice(false);
-            setCurrentInvoice(null);
-            setProcessingPayment(false);
-          }
-        }, 100);
-        
-        systemLogs.logDebug('🐛 Modal close commands issued for auto-liquidation');
-      } else {
-      // Auto-close modal after successful payment (with a brief delay to show success state)
-      setTimeout(() => {
-        setShowInvoice(false);
-        setCurrentInvoice(null);
-        systemLogs.logInfo('✅ Payment modal auto-closed after successful completion');
-      }, 2000); // 2 second delay to show success state
-    }
+    // Close modal with appropriate delay
+    const delay = paymentConfirmation.paymentType === 'auto_liquidation' ? 1000 : 2000;
+    setTimeout(() => {
+      setShowInvoice(false);
+      setCurrentInvoice(null);
+    }, delay);
   };
 
   /**
    * Stops the current payment polling
-   * For auto-liquidation, assumes completion instead of just stopping
    */
   const stopPolling = () => {
     if (window.stopCurrentPolling) {
       window.stopCurrentPolling();
       
-      // For auto-liquidation, assume completion and proceed
+      // For auto-liquidation, assume completion
       if (currentInvoice && currentInvoice.paymentType === 'auto_liquidation') {
-        systemLogs.logInfo('🛑 Auto-liquidation polling stopped by user - assuming completion');
+        systemLogs.logWarning('⚠️ Auto-liquidation polling stopped - assuming completion');
         handleSuccessfulPayment(currentInvoice);
       } else {
-        systemLogs.logInfo('🛑 Payment polling stopped by user');
         setPaymentError('Payment polling stopped by user');
+        setProcessingPayment(false);
       }
     }
   };
@@ -829,14 +799,16 @@ export default function LoanLTVDemo() {
    * Closes invoice modal and resets payment state
    */
   const closeInvoiceModal = () => {
-    // Stop any ongoing polling when closing modal
+    // Stop any ongoing polling
     if (window.stopCurrentPolling) {
       window.stopCurrentPolling();
     }
+    
+    // Reset all payment state
     setShowInvoice(false);
     setProcessingPayment(false);
     setCurrentInvoice(null);
-    setPaymentError(null); // Clear error when modal is manually closed
+    setPaymentError(null);
   };
   
   /**
@@ -908,6 +880,10 @@ export default function LoanLTVDemo() {
       }
       
       const newLoan = createLoan(collateralSats, principalUSD);
+      
+      // Clear liquidation flag when creating new loan
+      setLiquidationInProgress(false);
+      
       systemLogs.logSuccess(`🏦 New loan created: ${newLoan.loanId}`);
       systemLogs.logInfo(`💰 Loan amount: $${principalUSD.toLocaleString()}`);
       systemLogs.logInfo(`₿ Collateral: ${formatSats(collateralSats)} (${(collateralSats / 100_000_000).toFixed(8)} BTC)`);
@@ -1084,9 +1060,17 @@ export default function LoanLTVDemo() {
                 <span>{formatSats(loan.collateral.amountSats)}</span>
               </div>
               {metrics?.lightningWalletSats > 0 && (
-                <div className="flex justify-between text-orange-400">
-                  <span>⚡ Wallet:</span>
-                  <span>{formatSats(metrics.lightningWalletSats)}</span>
+                <div>
+                  <div className="flex justify-between text-orange-400">
+                    <span>⚡ Wallet:</span>
+                    <span>{formatSats(metrics.lightningWalletSats)}</span>
+                  </div>
+                  {metrics.lightningWalletSats <= LIQUIDATION_THRESHOLDS.MIN_LIQUIDATION_BALANCE && (
+                    <div className="text-xs text-blue-400 mt-1 flex items-center gap-1">
+                      <span>🛡️</span>
+                      <span>Protected from liquidation (≤ {formatSats(LIQUIDATION_THRESHOLDS.MIN_LIQUIDATION_BALANCE)})</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1162,7 +1146,7 @@ export default function LoanLTVDemo() {
                 </svg>
               </div>
               <h2 className="text-lg font-medium">Lightning Network Top-Up</h2>
-              <Tooltip content="DEMO MECHANICS: Lightning wallet funds are included in your total collateral and affect LTV calculation. When LTV hits 80%, your Lightning wallet auto-liquidates. When LTV hits 90%, your main loan liquidates. Demo Challenge: Can you trigger Lightning liquidation without loan liquidation?">
+              <Tooltip content="DEMO MECHANICS: Lightning wallet funds are included in your total collateral and affect LTV calculation. When LTV hits 80%, your Lightning wallet auto-liquidates (minimum 5,000 sats required). When LTV hits 90%, your main loan liquidates. Demo Challenge: Can you trigger Lightning liquidation without loan liquidation?">
                 <QuestionMarkIcon />
               </Tooltip>
             </div>
@@ -1177,6 +1161,19 @@ export default function LoanLTVDemo() {
                       : `Self-Custodial (${walletState.walletConfig.method.toUpperCase()})`
                     }
                   </span>
+                  {/* Refresh button for custodial wallets */}
+                  {walletState.walletConfig.type === 'custodial' && (
+                    <button
+                      onClick={manualRefreshBalance}
+                      className="ml-1 p-1 hover:bg-gray-700 rounded transition-colors"
+                      title="Refresh wallet balance"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M23 4v6h-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="px-3 py-1 bg-[#3a2a1a] text-[#f7931a] rounded-full text-sm">Setup Required</div>

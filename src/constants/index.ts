@@ -7,6 +7,7 @@ export const LIQUIDATION_THRESHOLDS = {
   LIGHTNING_LIQUIDATION: 80, // 80% LTV triggers Lightning wallet liquidation
   LOAN_LIQUIDATION: 90,      // 90% LTV triggers full loan liquidation
   WARNING: 65,               // 65% LTV shows warning
+  MIN_LIQUIDATION_BALANCE: 5000, // Minimum balance required for Lightning liquidation (sats)
 } as const;
 
 // Bitcoin Price Configuration

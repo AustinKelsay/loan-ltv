@@ -334,42 +334,10 @@ export const useVoltageAPI = (logger: Logger | null = null) => {
     try {
       const payment = await getPaymentDetails(paymentId);
       
-      // Debug: Log the full payment object to understand what Voltage returns
-      log('debug', `Payment ${paymentId.substring(0, 8)}... full details:`, payment);
+      // Simple payment completion check
+      const paid = payment.status === 'completed' || payment.status === 'succeeded';
       
-      // Convert status to paid boolean based on Voltage API documentation
-      // For receiving payments: 'completed' means payment received successfully
-      // For sending payments: 'completed' means payment sent successfully
-      // Also check for 'succeeded' as an alternative completion status
-      let paid = payment.status === 'completed' || payment.status === 'succeeded';
-      
-      // For send payments (like auto-liquidation), also check for specific completion states
-      if (!paid && payment.direction === 'send') {
-        // Some Voltage API implementations might use different status values
-        // Check for other potential completion indicators for send payments
-        if (payment.status === 'sent' || payment.status === 'successful') {
-          paid = true;
-          log('debug', `Send payment marked as paid due to status: ${payment.status}`);
-        }
-      }
-      
-      // Additional check: For receive payments, also check if there are any receipts/outflows
-      // indicating the payment was actually received
-      if (!paid && payment.direction === 'receive' && payment.data) {
-        // Check for outflows (onchain) or other completion indicators
-        if (payment.data.outflows && payment.data.outflows.length > 0) {
-          paid = true;
-          log('debug', `Payment marked as paid due to outflows present`);
-        }
-        // Check for receipts (another completion indicator)
-        if (payment.data.receipts && payment.data.receipts.length > 0) {
-          paid = true;
-          log('debug', `Payment marked as paid due to receipts present`);
-        }
-      }
-      
-      // Enhanced logging for debugging
-      log('debug', `Payment ${paymentId.substring(0, 8)}... status: ${payment.status}, direction: ${payment.direction}, paid: ${paid}`);
+      log('debug', `Payment ${paymentId.substring(0, 8)}... status: ${payment.status}, paid: ${paid}`);
       
       // Add sats conversion if amount is present
       if (payment.data && payment.data.amount_msats) {
